@@ -1,0 +1,10 @@
+# no backup
+*~
+*.bak
+
+# no compiled Python
+*.pyc
+
+# no compiled files
+*.o
+
