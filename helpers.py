@@ -55,24 +55,23 @@ class WVSRmetadataCollector:
     auto_obsdir, self.real_obsdir, self.project_dir, self.datadir, \
         self.wvsrdir, self.fftdir = get_session_dirs( project, dss, year, doy)
     # get the high-level metadata
-    self.get_source_data()
+    get_all_source_data(self.project_dir)
     self.get_scan_info()
     self.get_WVSR_names()
     self.get_metadata_from_WVSR_logs()
-    self.equip = standard_equipment(dss)
+    self.equip = {}
+    # specify station equipment for each IF
+    for wvsr in self.wvsrnames:
+      self.equip[wvsr] = {}
+      self.logger.debug('__init__: %s config: %s', wvsr, self.wvsr_cfg[wvsr])
+      for IF in self.wvsr_cfg[wvsr]['channels']:
+        self.logger.debug('__init__: %s IF %s config: %s', wvsr, IF, self.wvsr_cfg[wvsr][IF])
+        band = self.wvsr_cfg[wvsr][IF]['IF_source'].split('_')[1]
+        self.equip[wvsr][IF] = standard_equipment(dss, band)
+        #self.equip[wvsr][IF] = station_configuration(self.equip, project, 
+        #                                             dss, year, doy,'X')
+    # get the parameters for each FFT configuration
     self.get_metadata_from_FFT_logs()
-    
-    # get the station metadata
-    
-
-  def get_source_data(self):    
-    """
-    get data for all the sources and verifiers used by the project
-    """
-    self.logger.debug("__init__: project dir is %s", self.project_dir) 
-    self.sourcedata, self.date = get_all_source_data(self.project_dir,
-                                                     self.year, self.doy)
-    self.logger.debug(" date/time of Doppler calculation is %s", self.date.ctime())
   
   def get_scan_info(self):
     """
@@ -158,6 +157,7 @@ class WVSRmetadataCollector:
           for subkey in self.wvsr_cfg[wvsr][key].keys():
             if subkey[:7] == 'chan_id':
               self.wvsr_cfg[wvsr][key]['subchannels'].append(subkey)
+          self.wvsr_cfg[wvsr][key]['subchannels'].sort()
       self.logger.debug("get_metadata_from_WVSR: %s", self.wvsr_cfg)
 
   def parse_WVSR_log(self, logname):
@@ -187,10 +187,14 @@ class WVSRmetadataCollector:
         self.logger.debug("parse_WVSR_FFT_logs: EXPID line parts: %s", parts)
         exec(parts[3][:-1]+"= "+"'"+str(parts[8])+"'")
       if re.search('RF_TO_IF_LO\[',line):
+        # parse a log file line like::
+        #   16/237 08:45:15 wvsr2 RF_TO_IF_LO[2]: RF_TO_IF_LO: value = 8100
         # add to RF_TO_IF_LO for the IF channel to dict
         parts = line.split()
         exec(parts[3][:-1]+"= "+str(parts[-1]))
       if re.search("CHAN\\[.\\]: dsp", line):
+        # parse a lof file line like::
+        #   16/237 08:45:17 wvsr2 CHAN[2]: dsp1:1 chan_id = 001, bandwidth = 8000000, bits = 8
         # add subchannel and its parameters to CHAN dict
         parts = line.split()
         chan_str = parts[3][:-1]
@@ -266,6 +270,9 @@ class WVSRmetadataCollector:
     
     This must be invoked after 'get_metadata_from_WVSR_logs'.
     
+    This assumes that two IFs are combined into one signal with full
+    polarization information.  Then the subchannels are the same for both.
+    
     The problem with this right now is that there is no clean way to handle
     simultaneous WVSRs so this is going to have to assume that 'wvsrnames' has
     only one item for now.
@@ -293,8 +300,8 @@ class WVSRmetadataCollector:
                          'last_rec':  '2016 237:09:35:59.000',
                          'n_recs': 90,
                          'n_secs': 90},
-       'n_freqs':   131072,
-       'n_samples': 8000000}}
+           'n_freqs':   131072,
+           'n_samples': 8000000}}
     """
     fftlogs = glob.glob(self.fftdir+"*.log")
     fftlogs.sort()
@@ -315,8 +322,10 @@ class WVSRmetadataCollector:
     self.fft_meta = {}
     for scan in scannums:
       self.fft_meta[scan] = {} # first level dict on scan
+      # create a dict for each IF
       for channel in self.wvsr_cfg[self.wvsrnames.keys()[0]]["channels"]:
         self.fft_meta[scan][channel] = {} # second level dict on IF channel
+      # each IF has the same number of subchannels
       for subch in subchannels:
         # parse the FFT log
         logname = "%2d-%03d-%03d-s%04d_d%2d_RCP_LCP.wvsr.log" % \
@@ -336,9 +345,11 @@ class WVSRmetadataCollector:
             #self.logger.debug("get_metadata_from_FFT_logs: ch %d sub %s key '%s'",
             #                  ch, subch_key, key)
             if key == 'n_samples' or key == 'n_freqs':
-              self.fft_meta[scan][ch][key] = extracted[ch][key]
+              #self.fft_meta[scan][ch][key] = extracted[ch][key]
+              self.fft_meta[scan][key] = extracted[ch][key]
             else:
               self.fft_meta[scan][ch][subch_key][key] = extracted[ch][key]
+              #self.fft_meta[scan][subch_key][key] = extracted[ch][key]
           
   def parse_fft_log_name(self, logname):
     """
