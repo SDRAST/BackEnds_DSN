@@ -24,6 +24,8 @@ import IPython
 IPython.version_info = IPython.release.version.split('.')
 IPython.version_info.append('')
 
+from pylab import * #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
 import astropy.io.fits as pyfits
 import astropy.units as u
 import dateutil
@@ -48,7 +50,6 @@ from Automation.NMClogs import NMClogManager,NMC_log_server
 from Automation.sources import get_all_source_data
 from Automation.tones import tone_chnl_nums
 from Automation.WVSR import get_Naudet_FFT_dir, make_datadir_name
-#from Automation.WVSR import parse_scan_files, parse_WVSR_FFT_logs
 from Data_Reduction import get_obs_dirs, get_obs_session, select_data_files
 from Data_Reduction import get_num_chans, reduce_spectrum_channels
 from Data_Reduction.DSN.WVSR.SpecData import read_FFT_file
@@ -70,12 +71,14 @@ import Math.multigauss as multigauss
 
 obsmode = 'LINEPSSW'
 veldef = 'RADI-OBS'
-estimate_Tsys = True
 num_tonespec_chls = 16
 
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 warnings.filterwarnings('error')
+
+nanarray = numpy.array([numpy.nan, numpy.nan]) # used for tone fit pars
+blank_array = numpy.array(256*[numpy.nan])
 
 def biased_scaled_gaussian(x, bias, amp, offset, std):
   """
@@ -93,8 +96,10 @@ class FITSfile(object):
   """
   A FITS file object having primary header and binary table extensions.
   
-  The header describes the type of FITS file it is and where and when it was
-  created.
+  This class is a superclass with elements common to all DSN SDFITS files.
+  
+  The file header describes the type of FITS file it is and where and when it
+  was created.
   
   Each extension consists of a header followed by a column-oriented table
   (columns all have the same type of data).  The cells of the table can
@@ -102,11 +107,17 @@ class FITSfile(object):
   header.  Columns in which all cells have the same value are considered
   'virtual' may be replaced and may be replaced by a keyword, value pair
   in the extension header.
+  
+  When multiple table are created, the completed extensions are stored in
+  the attribute 'tables'
 
   Public attributes::
-    logger - a logging.Logger obhect
-    prihdu - a pyfits.PrimaryHDU object
-    tables - pyfits.BinTableHDU objects
+    columns - columns of the extension being created
+    exthead - header of the extension being created
+    logger  - a logging.Logger obhect
+    prihdu  - a pyfits.PrimaryHDU object
+    tel     - Telescope object
+    tables  - pyfits.BinTableHDU objects
   """
   def __init__(self, tel):
     """
@@ -130,7 +141,6 @@ class FITSfile(object):
     self.logger.debug(" creating for %s", self.tel.name)
     self.make_prihdu()
     self.add_site_data(self.prihdu.header)
-    #self.logger.debug(" Initial header: %s", self.prihdu.header)
     self.tables = {}
 
   def make_prihdu(self):
@@ -143,9 +153,10 @@ class FITSfile(object):
     
   def add_site_data(self, hdr):
     """
-    Adds telescope data to header
-
-    This may move to the file header when the INHERIT keyword is recognized.
+    Modifies 'hdr' by adding telescope data to header
+    
+    We pass the attribute header explicitly since so this method can be used
+    to set values in the primary header and the extension header
 
     @param hdr : the header to be modified
     @type  hdr : pyfits Header instance
@@ -158,19 +169,22 @@ class FITSfile(object):
     hdr['obsgeo-y'] = (self.tel['geo-y'],     "meters")
     hdr['obsgeo-z'] = (self.tel['geo-z'],     "meters")
 
+  # the following methods are invoked by the subclass which inherits from this
+  # superclass after the subclass has initialized a new table.
+    
   def make_basic_header(self):
     """
-    Starts a header with the required values
+    Starts an extension header with the required values
     
     This includes values that are applicable to DSN SDFITS as well as SDFITS
     """
-    head  = pyfits.Header() ## tbhdu.header
-    head['extname'] = ("SINGLE DISH",               "required keyword value")
-    head['nmatrix'] = (1,                           "one DATA column")
-    head['veldef']  = ('FREQ-OBS',                  "raw receiver frequency")
-    head['TIMESYS'] = ('UTC', "DSN standard time")
-    return head
-    
+    header  = pyfits.Header() ## tbhdu.header
+    header['extname'] = ("SINGLE DISH",               "required keyword value")
+    header['nmatrix'] = (1,                           "one DATA column")
+    header['veldef']  = ('FREQ-OBS',                  "raw receiver frequency")
+    header['TIMESYS'] = ('UTC', "DSN standard time")
+    return header
+  
   def make_basic_columns(self, numrecs=1):
     """
     Make the minimum set of columns needed by SDFITS
@@ -206,9 +220,9 @@ class FITSfile(object):
     # create empty column data arrays
     # create required columns.
 
-    cols = pyfits.ColDefs([
+    self.columns = pyfits.ColDefs([
       pyfits.Column(name='SCAN',     format='1I'),
-      pyfits.Column(name='CYCLE',    format='1I'),  # not used
+      pyfits.Column(name='CYCLE',    format='1I'), # used for subchannel
       pyfits.Column(name='DATE-OBS', format='16A'),
       pyfits.Column(name='OBJECT',   format='16A'),
       pyfits.Column(name='OBSMODE',  format='8A'),
@@ -218,11 +232,11 @@ class FITSfile(object):
       pyfits.Column(name='EXPOSURE', format='1E', unit='s'),
       pyfits.Column(name='TIME',     format='1E', unit='s'),
       pyfits.Column(name='BANDWIDT', format='1E', unit='Hz'),
-      pyfits.Column(name='SIDEBAND', format='1A'),
+      pyfits.Column(name='SIDEBAND', format='1I'),
       pyfits.Column(name='RESTFREQ', format='1D', unit='Hz'),
       pyfits.Column(name='OBSFREQ',  format='1D', unit='Hz')])
     # Velocity data
-    cols += pyfits.ColDefs(
+    self.columns += pyfits.ColDefs(
                 [pyfits.Column(name='VELDEF',   format='8A'),
                  pyfits.Column(name='RVSYS',    format='1E', unit='m/s'),
                  pyfits.Column(name='VFRAME',   format='1E', unit='m/s'),
@@ -230,12 +244,11 @@ class FITSfile(object):
                  pyfits.Column(name='EQUINOX',  format='1E')])
 
     # frequency switching offset
-    cols += pyfits.ColDefs(
+    self.columns += pyfits.ColDefs(
                      [pyfits.Column(name='FOFFREF1',  format='1E', unit='Hz')])
     
-    cols += self.make_offset_columns()
-    return cols
-
+    self.make_offset_columns()
+    
   def make_offset_columns(self, numrecs=1, 
                           Aoff=False,Xoff=True,Eoff=True,
                           equatorial=False,
@@ -270,14 +283,14 @@ class FITSfile(object):
     """
     # always required
     if numrecs > 1:
-      cols = pyfits.ColDefs([pyfits.Column(name='BEAMXOFF',
+      self.columns += pyfits.ColDefs([pyfits.Column(name='BEAMXOFF',
                                            format=str(numrecs)+'E',
                                           dim="(1,1,1,1,"+str(numrecs)+",1)"),
                              pyfits.Column(name='BEAMEOFF',
                                            format=str(numrecs)+'E',
                                           dim="(1,1,1,1,"+str(numrecs)+",1)")])
     else:
-      cols = pyfits.ColDefs([pyfits.Column(name='BEAMXOFF',
+      self.columns += pyfits.ColDefs([pyfits.Column(name='BEAMXOFF',
                                            format='E', unit='deg'),
                              pyfits.Column(name='BEAMEOFF',
                                            format='E', unit='deg')])
@@ -285,19 +298,24 @@ class FITSfile(object):
     # the following are traditional columns.  Use above format for dimensioned
     # columns
     if Aoff: # if needed
-      cols.add_col(pyfits.Column(name='BEAMAOFF', format='E', unit='deg'))
+      self.columns.add_col(pyfits.Column(name='BEAMAOFF', format='E',
+                                         unit='deg'))
     if equatorial: # equatorial offsets
-      cols.add_col(pyfits.Column(name='BEAMHOFF', format='E', unit='deg'))
-      cols.add_col(pyfits.Column(name='BEAMCOFF', format='E', unit='deg'))
-      cols.add_col(pyfits.Column(name='BEAMDOFF', format='E', unit='deg'))
+      self.columns.add_col(pyfits.Column(name='BEAMHOFF', format='E',
+                                         unit='deg'))
+      self.columns.add_col(pyfits.Column(name='BEAMCOFF', format='E',
+                                         unit='deg'))
+      self.columns.add_col(pyfits.Column(name='BEAMDOFF', format='E',
+                                         unit='deg'))
     if galactic:# find this code
       pass 
     if refpos: # reference position for position switching
-      cols.add_col(pyfits.Column(name='REF_HOFF', format='E', unit='deg'))
-      cols.add_col(pyfits.Column(name='REF_DOFF', format='E', unit='deg'))
-    return cols
+      self.columns.add_col(pyfits.Column(name='REF_HOFF', format='E',
+                                         unit='deg'))
+      self.columns.add_col(pyfits.Column(name='REF_DOFF', format='E',
+                                         unit='deg'))
 
-  def add_time_dependent_columns(self, numrecs, cols):
+  def add_time_dependent_columns(self, numrecs):
     """
     create columns for the time-dependent metadata
     """
@@ -307,46 +325,44 @@ class FITSfile(object):
       # index order is spectrum, RA, dec, pol, time, beam
       time_dim = "(1,1,1,1,"+str(numrecs)+",1)" # FORTRAN order to C reverses
       # for a single beam the last index is dropped
-    cols.add_col(pyfits.Column(name='LST',
+    self.columns.add_col(pyfits.Column(name='LST',
                                format=str(numrecs)+'D',
                                dim=time_dim))
-    cols.add_col(pyfits.Column(name='UNIXtime',
+    self.columns.add_col(pyfits.Column(name='UNIXtime',
                                format=str(numrecs)+'D',
                                dim=time_dim))
-    cols.add_col(pyfits.Column(name='AZIMUTH',
+    self.columns.add_col(pyfits.Column(name='AZIMUTH',
                                format=str(numrecs)+'E',
                                dim=time_dim))
-    cols.add_col(pyfits.Column(name='ELEVATIO',
+    self.columns.add_col(pyfits.Column(name='ELEVATIO',
                                format=str(numrecs)+'E',
                                dim=time_dim))
-    cols.add_col(pyfits.Column(name='TAMBIENT',
+    self.columns.add_col(pyfits.Column(name='TAMBIENT',
                                format=str(numrecs)+'E',
                                dim=time_dim))
-    cols.add_col(pyfits.Column(name='PRESSURE',
+    self.columns.add_col(pyfits.Column(name='PRESSURE',
                                format=str(numrecs)+'E',
                                dim=time_dim))
-    cols.add_col(pyfits.Column(name='HUMIDITY',
+    self.columns.add_col(pyfits.Column(name='HUMIDITY',
                                format=str(numrecs)+'E',
                                dim=time_dim))
-    cols.add_col(pyfits.Column(name='WINDSPEE',
+    self.columns.add_col(pyfits.Column(name='WINDSPEE',
                                format=str(numrecs)+'E',
                                dim=time_dim))
-    cols.add_col(pyfits.Column(name='WINDDIRE',
+    self.columns.add_col(pyfits.Column(name='WINDDIRE',
                                format=str(numrecs)+'E',
                                dim=time_dim))
-    return cols
     
   def make_data_axis(self, header, columns,
-                             daxis,
-                             length,
-                             dtype,
-                             dformat,
-                             unit=None, comment=None):
+                     daxis, length, dtype, dformat, unit=None, comment=None):
     """
     create header item and columns for a data axis
-
-    @param tbhdu : extension (table HDU)
-    @type  tbhdu : pyfits.TableHDU objetc
+    
+    @param header : header to be modified
+    @type  header : pyfits.Header object
+    
+    @param columns : table columns to be added
+    @type  columns : pyfits.ColDefs object
     
     @param daxis : axis number
     @type  daxis : int
@@ -380,7 +396,6 @@ class FITSfile(object):
       columns.add_col(col)
     header['maxis'+str(daxis)] = length
     self.logger.debug("make_data_axis: MAXIS%d = %d", daxis, length)
-    return header, columns
 
 class FITSfile_from_WVSR(FITSfile):
   """
@@ -391,7 +406,7 @@ class FITSfile_from_WVSR(FITSfile):
   astronomical spectra but can be useful in calibration.  These tones are
   extracted from the high-resolution raw FFTs and saved in a separate table.
   """
-  def __init__(self, tel, estimate_Tsys=True):
+  def __init__(self, tel):
     """
     Initialize a FITSfile_from_WVSR class
     
@@ -401,9 +416,8 @@ class FITSfile_from_WVSR(FITSfile):
     mylogger = logging.getLogger(logger.name+'.FITSfile_from_WVSR')
     FITSfile.__init__(self, tel)
     self.logger = mylogger
-    self.estimate_Tsys = estimate_Tsys
   
-  def make_WVSR_table(self, config, collector, logserver, key,
+  def make_WVSR_table(self, config, collector, logserver, key, tones=True,
                       project="GBRA", observer="UNKNOWN"):
     """
     Create extension for one Backend instance from WVSR data
@@ -433,6 +447,12 @@ class FITSfile_from_WVSR(FITSfile):
     @param logserver : provides NMC data for requested time
     @type  logserver : NMC_log_server object
     
+    @param key :
+    @type  key : str
+    
+    @param tones : should tone data be extracted into a separate extension
+    @type  tones : bool
+    
     @param project : project ID override or default
     @type  project : str
 
@@ -447,21 +467,25 @@ class FITSfile_from_WVSR(FITSfile):
     scans = self.collector.fft_meta.keys()
     scans.sort()
     numscans = len(scans)
+    
     # the number of data cube dimensions is four following the NRAO convention.
     first_scan = scans[0]
     nchans = self.collector.fft_meta[first_scan]['n_freqs']
     # set backend attribute
-    #self.collector.equip[key][1]['Backend'].num_chan = nchans
     config[key]['Backend'].num_chan = nchans
     # compute number of spectrum channels for science
-    subchannel_names = self.collector.wvsr_cfg[cfg_key][1]['subchannels'] # 
+    subchannel_names = self.collector.wvsr_cfg[cfg_key][1]['subchannels']
     num_subchans = len(subchannel_names)
     anysubch = subchannel_names[0] # any subchannel
+    
+    # get the frequency and bandwidth
     obsfreq = self.collector.wvsr_cfg[cfg_key][1]['rf_to_if_lo']*1e6 \
                              + self.collector.wvsr_cfg[cfg_key][1][anysubch]['sfro']
-    bandwidth = self.collector.wvsr_cfg['wvsr2'][1]['chan_id 1']['bandwidth']
+    bandwidth = self.collector.wvsr_cfg[cfg_key][1]['chan_id 1']['bandwidth']
+    
     # number of channels in the Stokes spectra
     num_Stokes_chan = get_num_chans(obsfreq, bandwidth, 0.05)
+    
     # shape of data cube (spec chls, RA, dec, Stokes)
     dims = (num_Stokes_chan, 1, 1, 4)
     self.logger.debug("make_WVSR_table: science data shape is %s", dims)
@@ -471,164 +495,149 @@ class FITSfile_from_WVSR(FITSfile):
     npols = dims[3]    
     
     # start the extension header for astronomy data
-    tbhead = self.make_basic_header()
-    #fe_key = self.collector.equip[key][1]['FrontEnd'].keys()[0] # only one FE
+    self.exthead = self.make_basic_header()
     self.fe_key = config[key]['FrontEnd'].keys()[0] # only one FE
-    #rx_key = self.collector.equip[key][1]['Receiver'].keys()[0] # only one receiver
     self.rx_key = config[key]['Receiver'].keys()[0] # only one receiver
-    tbhead['FRONTEND'] = (config[key]['FrontEnd'][self.fe_key].name,
+    self.exthead['FRONTEND'] = (config[key]['FrontEnd'][self.fe_key].name,
                           "front end ID")
-    tbhead['RECEIVER'] = (config[key]['Receiver'][self.rx_key].name,
+    self.exthead['RECEIVER'] = (config[key]['Receiver'][self.rx_key].name,
                           "receiver ID")
     # get_hardware_metadata takes care of BACKEND
-    tbhead['projid']  = self.collector.project
-    tbhead['observer'] = self.collector.wvsr_cfg[key]['user']
-    
-    # start extension header for tone data
-    #    I don't trust 'tbhead' because assigment doesn't necessarily make a
-    # stand-alone copy.
-    tonehead = self.make_basic_header()
-    # suspect extensions are ordered alphabetically by name; TONES after SINGLE
-    tonehead['extname'] = ("TONES_PCG", "phase cal tone extension") # override
-    #tonehead['FRONTEND'] = (self.collector.equip[key][1]['FrontEnd'][fe_key].name, "front end ID")
-    tonehead['FRONTEND'] = (config[key]['FrontEnd'][self.fe_key].name, "front end ID")
-    #tonehead['RECEIVER'] = (self.collector.equip[key][1]['Receiver'][rx_key].name, "receiver ID")
-    tonehead['RECEIVER'] = (config[key]['Receiver'][self.rx_key].name, "receiver ID")
-    tonehead['projid']  = self.collector.project
-    tonehead['observer'] = self.collector.wvsr_cfg[key]['user']
+    self.exthead['projid']  = self.collector.project
+    self.exthead['observer'] = self.collector.wvsr_cfg[key]['user']
     
     # add the site data (again)
-    self.add_site_data(tbhead)
+    self.add_site_data(self.exthead)
     
     # make the basic columns that are always needed
-    cols = self.make_basic_columns()
-    tonecols = self.make_tone_columns()
+    # 
+    self.make_basic_columns()
 
     # add the backend data
     BE = config[key]['Backend'].wvsrs[key]
-    tbhead, cols = self.get_hardware_metadata(BE, tbhead, cols)
-    tonehead, tonecols = self.get_hardware_metadata(BE, tonehead, tonecols)
+    self.get_hardware_metadata(BE)
+    #tonehead, tonecols = self.get_hardware_metadata(BE, tonehead, tonecols)
 
     # things like LST, wind, etc.
-    cols = self.add_time_dependent_columns(1, cols)
-    # we have to skip the next one if there is no system temperature information
-    #if self.estimate_Tsys:
-    #  cols = self.add_IF_dependent_columns(1, cols)
+    self.add_time_dependent_columns(1)
     
     # Add columns describing the data matrix
     #   Note that refpix defaults to 0
-    axis = 1; tbhead, cols = self.make_data_axis(tbhead, cols,
-                                                 axis,
-                                                 num_Stokes_chan,
-                                                 'FREQ-OBS', 'D',
-                                                 unit='Hz',
+    axis = 1; self.make_data_axis(self.exthead, self.columns, axis,
+                                  num_Stokes_chan, 'FREQ-OBS', 'D', unit='Hz',
                                 comment="channel frequency in telescope frame")
-
-    axis +=1; tbhead, cols = self.make_data_axis(tbhead, cols, axis,
-                                                 nlong,
-                                                 'RA---GLS', 'D',
-                                                 unit='deg',
-                                                 comment="RA J2000.0")
-    axis +=1; tbhead, cols = self.make_data_axis(tbhead, cols, axis,
-                                                 nlat,
-                                                 'DEC--GLS','D',
-                                                 unit='deg',
-                                                 comment="decl. J2000") 
-    #   Stokes axis
-    #     get the polarizations from the spectrometer input signals
-    axis+=1; tbhead, cols = self.make_data_axis(tbhead, cols, axis,
-                                                npols, 'STOKES',  'I',
-                                         comment="polarization code: 1,2,3,4")
-    
+    axis +=1; self.make_data_axis(self.exthead, self.columns, axis,
+                                  nlong, 'RA---GLS', 'D', unit='deg',
+                                  comment="RA J2000.0")
+    axis +=1; self.make_data_axis(self.exthead, self.columns, axis,
+                                  nlat, 'DEC--GLS','D', unit='deg',
+                                  comment="decl. J2000") 
+    #   Stokes axis ; get the polarizations from the spectrometer input signals
+    axis+=1; self.make_data_axis(self.exthead, self.columns, axis,
+                                 npols, 'STOKES',  'I',
+                                 comment="polarization code: 1,2,3,4")
     # Make the data column
-    fmt_multiplier = tbhead['MAXIS1']*tbhead['MAXIS2']*tbhead['MAXIS3'] \
-                    *tbhead['MAXIS4']
+    fmt_multiplier = self.exthead['MAXIS1']*self.exthead['MAXIS2']* \
+                     self.exthead['MAXIS3']*self.exthead['MAXIS4']
     self.logger.debug("make_WVSR_table: format multiplier = %d", fmt_multiplier)
-    dimsval = "("+str(tbhead['MAXIS1'])+"," \
-                 +str(tbhead['MAXIS2'])+"," \
-                 +str(tbhead['MAXIS3'])+"," \
-                 +str(tbhead['MAXIS4'])+")"
+    dimsval = "("+str(self.exthead['MAXIS1'])+"," \
+                 +str(self.exthead['MAXIS2'])+"," \
+                 +str(self.exthead['MAXIS3'])+"," \
+                 +str(self.exthead['MAXIS4'])+")"
     self.logger.debug("make_WVSR_table: computed scan shape: %s", dimsval)
     data_format = str(fmt_multiplier)+"E"
     self.logger.debug("make_WVSR_table: data_format = %s", data_format)
-    data_col = pyfits.Column(name='SPECTRUM',
+    self.columns += pyfits.Column(name='SPECTRUM',
                              format=data_format, dim=dimsval)
-    cols.add_col(data_col)
+
+    # add column for system temperatures
+    self.columns.add_col(pyfits.Column(name='TSYS', format='2E', unit="K",
+                               dim="(1,1,1,2)"))
     
-    # Now describe the tone data structure
-    num_subch = len(subchannel_names)
-    total_num_tones = 0
-    for subch in subchannel_names: # count up the tones
-      # there is one tone every MHz
-      num_tones = \
+    if tones:
+      # start extension header for tone data
+      self.make_tone_header()
+      self.make_tone_columns()
+      self.tonehead['backend'] = self.exthead['backend']
+      self.tonehead['maxis1']  = self.exthead['maxis1']
+      self.tonehead['freqres'] = self.exthead['freqres']
+      # Now describe the tone data structure
+      num_subch = len(subchannel_names)
+      total_num_tones = 0
+      for subch in subchannel_names: # count up the tones
+        # there is one tone every MHz
+        num_tones = \
             int(self.collector.wvsr_cfg[cfg_key][1][anysubch]['bandwidth']/1e6)
-      total_num_tones += num_tones
-            
-    #self.logger.debug("make_WVSR_table: %d tones in all subchannels", num_tones)
-    #   we take 256 channels centered on the hi-res channel nearest the tone
-    toneaxis = 1; tonehead, tonecols = self.make_data_axis(tonehead, tonecols,
-                                                           toneaxis,
-                                                           num_tonespec_chls,
-                                                           'FREQ-OBS', 'D',
-                                                           unit='Hz',
+        total_num_tones += num_tones
+      #   we take 256 channels centered on the hi-res channel nearest the tone
+      toneaxis = 1; self.make_data_axis(self.tonehead, self.tonecols,
+                                        toneaxis, num_tonespec_chls,
+                                        'FREQ-OBS', 'D', unit='Hz',
                                 comment="channel frequency in telescope frame")
-    #     a Stokes spectrometer always has two input signals
-    toneaxis+=1; tonetonehead, tonecols = self.make_data_axis(tonehead, tonecols, 
-                                                              toneaxis,
-                                                              2, 
-                                                              'STOKES',  'I',
-                                           comment="polarization code: -2, -1")
-    # Make the tone data column (MAXIS was set by make_data_axis)
-    fmt_multiplier = tonehead['MAXIS1']*tonehead['MAXIS2']
-    self.logger.debug("make_WVSR_table: tone format multiplier = %d",
+      #     a Stokes spectrometer always has two input signals
+      # IF1 is Stokes code -1 (RR) and IF2 is -2 (LL)
+      toneaxis+=1; self.make_data_axis(self.tonehead, self.tonecols, 
+                                       toneaxis, 2, 
+                                       'STOKES',  'I',
+                                       comment="polarization code: -2, -1")
+      # Make the tone data column (MAXIS was set by make_data_axis)
+      fmt_multiplier = self.tonehead['MAXIS1']*self.tonehead['MAXIS2']
+      self.logger.debug("make_WVSR_table: tone format multiplier = %d",
                       fmt_multiplier)
-    dimsval = "("+str(tonehead['MAXIS1']) + "," + str(tonehead['MAXIS2'])+")"
-    self.logger.debug("make_WVSR_table: computed scan shape: %s", dimsval)
-    data_format = str(fmt_multiplier)+"E"
-    self.logger.debug("make_WVSR_table: data_format = %s", data_format)
-    tonedata_col = pyfits.Column(name='TONES',
-                             format=data_format, dim=dimsval)
-    tonecols.add_col(tonedata_col)
-    
-    # columns for tone fits
-    tonecols.add_col(pyfits.Column(name='BASELINE', format='4E', dim="(2,1,1,2)"))
-    tonecols.add_col(pyfits.Column(name='TONEAMP',  format='4E', dim="(2,1,1,2)"))
-    tonecols.add_col(pyfits.Column(name='TONEOFST', format='4E', dim="(2,1,1,2)"))
-    tonecols.add_col(pyfits.Column(name='TONEWIDT', format='4E', dim="(2,1,1,2)"))
-    #                           format=str(2*num_tones/num_subch)+'E',
-    #                           dim="("+ str(num_tones/num_subch)+",1,1,2)"))
-                               
-    cols.add_col(pyfits.Column(name='IFSPECTR', format='2048E',
-                                                          dim="(1024,1,1,2)"))
-    # Tone-free averaged IF power 
-    # IF dependent dim is (1, 1, 1, 2)
-    # IF1 is Stokes code -1 (RR) and IF2 is -2 (LL)
-    cols.add_col(pyfits.Column(name='avgpower', format='2E', dim="(1,1,1,2)"))
-
-    if self.estimate_Tsys:
-      # add column for estimated system temperatures if not measured
-      cols.add_col(pyfits.Column(name='TSYS', format='2E', dim="(1,1,1,2)"))
-
-    
-    # create a table extension for astronomy data
-    FITSrec = pyfits.FITS_rec.from_columns(cols, nrows=numscans*num_subchans)
-    tabhdu =  pyfits.BinTableHDU(data=FITSrec, header=tbhead,
-                                      name="SINGLE DISH")
-
-    # create a table extension for tone data
-    toneFITSrec = pyfits.FITS_rec.from_columns(tonecols,
+      dimsval = "("+str(self.tonehead['MAXIS1']) + "," + \
+                    str(self.tonehead['MAXIS2'])+")"
+      self.logger.debug("make_WVSR_table: computed scan shape: %s", dimsval)
+      data_format = str(fmt_multiplier)+"E"
+      self.logger.debug("make_WVSR_table: data_format = %s", data_format)
+      self.tonecols.add_col(pyfits.Column(name='TONES',
+                             format=data_format, dim=dimsval))
+      # columns for tone fits
+      self.tonecols.add_col(pyfits.Column(name='BASELINE', format='4E',
+                                          dim="(2,1,1,2)"))
+      self.tonecols.add_col(pyfits.Column(name='TONEAMP',  format='4E',
+                                          dim="(2,1,1,2)"))
+      self.tonecols.add_col(pyfits.Column(name='TONEOFST', format='4E',
+                                          dim="(2,1,1,2)"))
+      self.tonecols.add_col(pyfits.Column(name='TONEWIDT', format='4E',
+                                          dim="(2,1,1,2)"))
+      # add IF monitor spectra to main table
+      self.columns.add_col(pyfits.Column(name='IFSPECTR', format='2048E',
+                                         dim="(1024,1,1,2)"))
+      self.logger.debug("make_WVSR_table: columns: %s", self.columns.names)
+      # create a table extension for tone data
+      toneFITSrec = pyfits.FITS_rec.from_columns(self.tonecols,
                                                 nrows=numscans*total_num_tones)
-    tonetabhdu = pyfits.BinTableHDU(data=toneFITSrec, header=tonehead,
+      tonetabhdu = pyfits.BinTableHDU(data=toneFITSrec, header=self.tonehead,
                                     name="TONES PCG")
     
-    
-    # fill in the data and tone tables rows
-    tabhdu, tonetabhdu = self.add_data(tabhdu, tonetabhdu, key)
-    
+    # create a table extension for astronomy data
+    FITSrec = pyfits.FITS_rec.from_columns(self.columns,
+                                           nrows=numscans*num_subchans)
+    tabhdu =  pyfits.BinTableHDU(data=FITSrec, header=self.exthead,
+                                      name="SINGLE DISH")
+    if tones:
+      # fill in the data and tone tables rows
+      tabhdu, tonetabhdu = self.add_data(tabhdu, tonetabhdu, key)
+      self.tables[key+"-pcg"] = tonetabhdu
+    else:
+      tabhdu, dummy = self.add_data(tabhdu, None, key)
     self.tables[key] = tabhdu
-    self.tables[key+"-pcg"] = tonetabhdu
-    return tabhdu, tonetabhdu
-    
+  
+  def make_tone_header(self):
+    """
+    """
+    #    I don't trust 'tbhead' because assigment doesn't necessarily make a
+    # stand-alone copy.
+    self.tonehead = self.make_basic_header()
+    # suspect extensions are ordered alphabetically by name; TONES after SINGLE
+    self.tonehead['extname'] = ("TONES_PCG", "phase cal tone extension")
+    self.tonehead['FRONTEND'] = (config[key]['FrontEnd'][self.fe_key].name,
+                                 "front end ID")
+    self.tonehead['RECEIVER'] = (config[key]['Receiver'][self.rx_key].name,
+                                 "receiver ID")
+    self.tonehead['projid']  = self.collector.project
+    self.tonehead['observer'] = self.collector.wvsr_cfg[key]['user']
+     
   def make_tone_columns(self, numrecs=1):
     """
     Make the minimum set of columns needed by SDFITS
@@ -653,7 +662,7 @@ class FITSfile_from_WVSR(FITSfile):
     # create empty column data arrays
     # create required columns.
 
-    cols = pyfits.ColDefs([
+    self.tonecols = pyfits.ColDefs([
       pyfits.Column(name='SCAN',     format='1I'             ),
       pyfits.Column(name='CYCLE',    format='1I'             ),
       pyfits.Column(name='DATE-OBS', format='16A'            ),
@@ -663,20 +672,12 @@ class FITSfile_from_WVSR(FITSfile):
       pyfits.Column(name='BANDWIDT', format='1E', unit='Hz'  ),
       pyfits.Column(name='SIDEBAND', format='1A'             ),
       pyfits.Column(name='OBSFREQ',  format='1D', unit='Hz'  )])
-      #pyfits.Column(name='AZIMUTH',  format='1E', unit='deg' ),
-      #pyfits.Column(name='ELEVATIO', format='1E', unit='deg' ),
-      #pyfits.Column(name='TAMBIENT', format='1E', unit='C'   ),
-      #pyfits.Column(name='PRESSURE', format='1E', unit='mB'  ),
-      #pyfits.Column(name='HUMIDITY', format='1E', unit='%'   ),
-      #pyfits.Column(name='WINDSPEE', format='1E', unit='km/h'),
-      #pyfits.Column(name='WINDDIRE', format='1E', unit='deg' )])
       
     # frequency switching offset
-    cols += pyfits.ColDefs(
+    self.tonecols += pyfits.ColDefs(
                      [pyfits.Column(name='FOFFREF1',  format='1E', unit='Hz')])
-    return cols
 
-  def get_hardware_metadata(self, BE, hdr, cols):
+  def get_hardware_metadata(self, BE):
     """
     Initializes columns for the backends.
 
@@ -684,11 +685,10 @@ class FITSfile_from_WVSR(FITSfile):
     own extension so BACKEND doesn't need a column.
     
     """
-    hdr['backend'] = BE.name
-    hdr['maxis1'] =  (BE.fft_cfg['n_freqs'], "length of DATA axis 1")
+    self.exthead['backend'] = BE.name
+    self.exthead['maxis1'] = (BE.fft_cfg['n_freqs'], "length of DATA axis 1")
     subchannel = BE.IF[1].subchannel['chan_id 1'] # any one will do
-    hdr['freqres'] =  float(subchannel['bandwidth'])/subchannel['nchans']
-    return hdr, cols
+    self.exthead['freqres'] =  float(subchannel['bandwidth'])/subchannel['nchans']
   
   def add_data(self, tabhdu, tonetabhdu, cfg_key, numrecs=1):
     """
@@ -711,20 +711,37 @@ class FITSfile_from_WVSR(FITSfile):
     @type  cfg_key : str
     """
     self.logger.debug("add_data: with %d records/scan", numrecs)
+    
     scans = self.collector.fft_meta.keys()
+    scans.sort()
     numscans = len(scans) # scans observed
+    self.logger.debug("add_data: %d scans: %s", numscans, scans)
+    
     # both IFs have the same subchannels
     subchannels = self.collector.wvsr_cfg[cfg_key][1]['subchannels']
     # create frame to return antenna RA and dec to J2000
     fk5_2000 = FK5(equinox=Time(2000, format='jyear', scale='utc'))
-    self.IFpower = {}
-    blank_array = numpy.array(256*[numpy.nan])
     
+    # receiver providing the signal to the spectrometer
+    rx_key = self.collector.equip[cfg_key][1]['Receiver'].keys()[0] # only one
+    rx = self.collector.equip[cfg_key][1]['Receiver'][rx_key]
+    self.logger.debug("add_data: receiver is %s", rx)
+    
+    # original number of channels
+    num_chan = self.collector.equip[cfg_key][1]['Backend'].num_chan
+
+    self.IFpower = {}
     data_row_index = 0
-    tone_row_index = 0
-    for scan in self.collector.scankeys:
+    if tonetabhdu:
+      tone_row_index = 0
+    for scan in scans:    # self.collector.scankeys:
       # dataset header is keyed on the index of the scan in the set of scans
-      scan_index = scans.index(scan)
+      try:
+        scan_index = scans.index(scan)
+      except ValueError,details:
+        self.logger.warning("add _data: scan %s not found; skipped",
+                            scan)
+        continue
       # use date of first record; see doc string for explanation of extra index
       year, month, day = calendar_date(self.collector.year, self.collector.doy)
       # UNIX time at midnight
@@ -732,10 +749,9 @@ class FITSfile_from_WVSR(FITSfile):
                           tabhdu.data[data_row_index]['DATE-OBS']).timetuple())
       subch_tone_idx = 0 # collect tone data from both subchannels
       for subch in subchannels:
-        self.logger.debug("add_data: processing scan %d %s data row %d",
-                        scan, subch, data_row_index)
-        self.logger.debug("add_data: processing scan %d %s tone row %d",
-                        scan, subch, tone_row_index)
+        self.logger.debug(
+                     "add_data: processing scan %d %s data row %d tone row %d",
+                     scan, subch, data_row_index, tone_row_index)
         sub_idx = subchannels.index(subch)
         tabhdu.data[data_row_index]['SCAN'] = scan   # int
         tabhdu.data[data_row_index]['DATE-OBS'] = \
@@ -744,81 +760,114 @@ class FITSfile_from_WVSR(FITSfile):
         tabhdu.data[data_row_index]['CYCLE'] = sub_idx+1
         self.logger.debug("add_data: CYCLE = %d",
                           tabhdu.data[data_row_index]['CYCLE'])
-        datafile = self.collector.scaninfo[scan]['subch '+str(sub_idx+1)]
+        try:
+          datafile = self.collector.scaninfo[scan]['subch '+str(sub_idx+1)]
+        except KeyError, details:
+          self.logger.warning("add_data: could not find subch %d for scan %d",
+                              sub_idx+1, scan)
+          continue
         # this returns a structured array with 131072 spectrum channels
         thisdata = read_FFT_file(fftdir+datafile)
-        # In [26]: data.dtype.names
-        # Out[26]: 
-        # ('freq', 'IF1-ps', 'IF2-ps', 'IF1-phase', 'IF2-phase',
-        #   'I',     'Q',      'U',      'V',           'P',
-        #  'count', 'index')
-        starttime = self.collector.scaninfo[scan]['start'] # datetime.datetime
-        endtime = self.collector.scaninfo[scan]['end']
-        self.logger.debug("add_data: for scan %d %s between %s and %s",
-                          scan, subch,starttime,endtime)
-        startUXtime = datetime_to_UnixTime(starttime)
-        endUXtime = datetime_to_UnixTime(endtime)
-        tabhdu.data[data_row_index]['UNIXtime'] = startUXtime
-        tabhdu.data[data_row_index]['TIME'] = \
+        if type(thisdata) == numpy.ndarray:
+          # In [26]: data.dtype.names
+          # Out[26]: 
+          # ('freq', 'IF1-ps', 'IF2-ps', 'IF1-phase', 'IF2-phase',
+          #   'I',     'Q',      'U',      'V',           'P',
+          #  'count', 'index')
+          starttime = self.collector.scaninfo[scan]['start'] # datetime.datetime
+          endtime = self.collector.scaninfo[scan]['end']
+          self.logger.debug("add_data: for scan %d %s between %s and %s",
+                            scan, subch,starttime,endtime)
+          startUXtime = datetime_to_UnixTime(starttime)
+          endUXtime = datetime_to_UnixTime(endtime)
+          tabhdu.data[data_row_index]['UNIXtime'] = startUXtime
+          tabhdu.data[data_row_index]['TIME'] = \
                                tabhdu.data[data_row_index]['UNIXtime']-midnight
-        if self.collector.scaninfo[scan]['source'][-4:] == "-ref":
-          tabhdu.data[data_row_index]['OBJECT'] = \
-                                        self.collector.scaninfo[scan]['source'][:-4]
-          tabhdu.data[data_row_index]['SIG'] = False
+          if self.collector.scaninfo[scan]['source'][-4:] == "-ref":
+            tabhdu.data[data_row_index]['OBJECT'] = \
+                                   self.collector.scaninfo[scan]['source'][:-4]
+            tabhdu.data[data_row_index]['SIG'] = False
+          else:
+            tabhdu.data[data_row_index]['OBJECT'] = \
+                                        self.collector.scaninfo[scan]['source']
+            tabhdu.data[data_row_index]['SIG'] = True
+          self.logger.debug("add_data: source is %s", 
+                            tabhdu.data[data_row_index]['OBJECT'])
+          response = self.logserver[cfg_key].get_azel(startUXtime, endUXtime)
+          self.logger.debug("add_data: response = %s", response)
+          if response:
+            az,el = response
+            tabhdu.data[data_row_index]['AZIMUTH'] = az
+            tabhdu.data[data_row_index]['ELEVATIO'] = el
+          else:
+            tabhdu.data[data_row_index]['AZIMUTH'] = numpy.nan
+            tabhdu.data[data_row_index]['ELEVATIO'] = numpy.nan
+          tabhdu.data[data_row_index]['OBSMODE'] = obsmode
+          # same exposure for all channels
+          tabhdu.data[data_row_index]['EXPOSURE'] = thisdata[0]['count']
         else:
-          tabhdu.data[data_row_index]['OBJECT'] = \
-                                             self.collector.scaninfo[scan]['source']
-          tabhdu.data[data_row_index]['SIG'] = True
-        self.logger.debug("add_data: source is %s", 
-                          tabhdu.data[data_row_index]['OBJECT'])
-        response = self.logserver[cfg_key].get_azel(startUXtime, endUXtime)
-        self.logger.debug("add_data: response = %s", response)
-        if response:
-          az,el = response
-          tabhdu.data[data_row_index]['AZIMUTH'] = az
-          tabhdu.data[data_row_index]['ELEVATIO'] = el
-        else:
-          tabhdu.data[data_row_index]['AZIMUTH'] = numpy.nan
-          tabhdu.data[data_row_index]['ELEVATIO'] = numpy.nan
-        tabhdu.data[data_row_index]['OBSMODE'] = obsmode
-        # same exposure for all channels
-        tabhdu.data[data_row_index]['EXPOSURE'] = thisdata[0]['count']
+          # bad data file
+          # this is probably the end of the recording
+          self.logger.warning(
+          "add_data: read_FFT_file return not a numpy array for scan %d %s",
+            scan, subch)
         # same frequency and bandwidth for both IFs
         tabhdu.data[data_row_index]['BANDWIDT'] = \
-                       self.collector.wvsr_cfg['wvsr2'][1]['chan_id 1']['bandwidth']
+                  self.collector.wvsr_cfg[cfg_key][1]['chan_id 1']['bandwidth']
         obsfreq = self.collector.wvsr_cfg[cfg_key][1]['rf_to_if_lo']*1e6 \
-                                + self.collector.wvsr_cfg[cfg_key][1][subch]['sfro']
+                           + self.collector.wvsr_cfg[cfg_key][1][subch]['sfro']
         tabhdu.data[data_row_index]['OBSFREQ'] = obsfreq
         tabhdu.data[data_row_index]['RESTFREQ'] = obsfreq # is this always true?
+        self.logger.debug("add_data: OBJECT is '%s'",
+                          tabhdu.data[data_row_index]['OBJECT'])
         sourcename = tabhdu.data[data_row_index]['OBJECT'].replace('_',' ')
+        self.logger.debug("add_data: OBJECT is '%s'",
+                          tabhdu.data[data_row_index]['OBJECT'])
         tabhdu.data[data_row_index]['VELOCITY'] = \
-                                          self.collector.sources[sourcename]['Vlsr']
+                                     self.collector.sources[sourcename]['Vlsr']
         tabhdu.data[data_row_index]['VELDEF'] = veldef
         weather = self.logserver[cfg_key].get_weather(startUXtime)
         self.logger.debug("add_data: weather at %s is %s", startUXtime, weather)
-        tabhdu.data[data_row_index]['TAMBIENT'] = weather[0]
-        tabhdu.data[data_row_index]['PRESSURE'] = weather[1]
-        tabhdu.data[data_row_index]['HUMIDITY'] = weather[2]
-        tabhdu.data[data_row_index]['WINDSPEE'] = weather[3]
-        tabhdu.data[data_row_index]['WINDDIRE'] = weather[4]
+        if weather:
+          tabhdu.data[data_row_index]['TAMBIENT'] = weather[0]
+          tabhdu.data[data_row_index]['PRESSURE'] = weather[1]
+          tabhdu.data[data_row_index]['HUMIDITY'] = weather[2]
+          tabhdu.data[data_row_index]['WINDSPEE'] = weather[3]
+          tabhdu.data[data_row_index]['WINDDIRE'] = weather[4]
+        else:
+          self.logger.debug("add_data: weather not available for %f", startUXtime)
+          tabhdu.data[data_row_index]['TAMBIENT'] = numpy.nan
+          tabhdu.data[data_row_index]['PRESSURE'] = numpy.nan
+          tabhdu.data[data_row_index]['HUMIDITY'] = numpy.nan
+          tabhdu.data[data_row_index]['WINDSPEE'] = numpy.nan
+          tabhdu.data[data_row_index]['WINDDIRE'] = numpy.nan
+        
+        datacubeshape = tabhdu.data[data_row_index]['SPECTRUM'].shape
+        # the frequency axis is first in FITS/FORTRAN order and last (of four)
+        # in PYTHON/C order
+        num_Stokes_chan = datacubeshape[3]
+        # the sign of CDELT1 depends on the sideband of the last SSB mixer in
+        # the chain
+        # GBT SDFITS wants SIDEBAND
+        if rx['IFmode'] == 'U':
+          tabhdu.data[data_row_index]['SIDEBAND'] = +1
+        elif rx['IFmode'] == 'L':
+          tabhdu.data[data_row_index]['SIDEBAND'] = -1
+        else:
+          self.logger.error("add_data: IF mode %s is invalid; default to USB",
+                            rx['IFmode'])
+          tabhdu.data[data_row_index]['SIDEBAND'] = +1
       
         # for first data axis (frequency)
-        num_chan = self.collector.equip[cfg_key][1]['Backend'].num_chan
+        #      these are not needed here because they are computed when the
+        #      number of channels is reduced
         tabhdu.data[data_row_index]['CRVAL1'] = \
                                          tabhdu.data[data_row_index]['OBSFREQ']
-        datacubeshape = tabhdu.data[data_row_index]['SPECTRUM'].shape
-        num_Stokes_chan = datacubeshape[3]
         tabhdu.data[data_row_index]['CDELT1'] = \
+                        tabhdu.data[data_row_index]['SIDEBAND'] * \
                         tabhdu.data[data_row_index]['BANDWIDT']/num_Stokes_chan
         tabhdu.data[data_row_index]['CRPIX1'] = num_Stokes_chan/2 # at middle
-        # GBT SDFITS wants SIDEBAND
-        rx_key = self.collector.equip[cfg_key][1]['Receiver'].keys()[0] # only one
-        rx = self.collector.equip[cfg_key][1]['Receiver'][rx_key]
-        self.logger.debug("add_data: receiver is %s", rx)
-        tabhdu.data[data_row_index]['SIDEBAND'] = rx['IFmode']
-        tabhdu.data[data_row_index]['CDELT1'] = \
-                        tabhdu.data[data_row_index]['BANDWIDT']/num_Stokes_chan
-      
+       
         # second and third data axes (coordinates)
         RA, dec = \
           self.logserver[cfg_key].get_RAdec(startUXtime)
@@ -844,229 +893,157 @@ class FITSfile_from_WVSR(FITSfile):
         # initialize power averages
         self.IFpower[data_row_index] = {'IF1': thisdata['IF1-ps'],
                                         'IF2': thisdata['IF2-ps']}
-        # fit the tones to the data.
+        # fit the tones to the data using the original resolution
         bandwidth = tabhdu.data[data_row_index]['BANDWIDT']
-        tone_offsets, tone_chnls = tone_chnl_nums(num_chan, obsfreq, bandwidth)
-        self.logger.debug("add_data: tone offsets: %s", tone_offsets)
-        self.logger.debug("add_data: tone channels: %s", tone_chnls)
+        if tonetabhdu:
+          tone_offsets, tone_chnls = tone_chnl_nums(num_chan, obsfreq,
+                                                    bandwidth)
+          self.logger.debug("add_data: tone offsets: %s", tone_offsets)
+          self.logger.debug("add_data: tone channels: %s", tone_chnls)
+          tone_indices = list(tone_chnls) # define the channels to be selected
+          num_tones = len(tone_indices)
         offset, center_tone = math.modf(obsfreq/1e6) # tones every MHz
         # the objective is to fit the position of one (e.g. central) tone
         # and one std with all the other tones at a fixed distance from the
         # central tone and one std for all tones.  The individual amplitudes
         # may vary. 'multigauss.other_pars' has the fixed parameters.
         for IF in ['IF1', 'IF2']:
+          self.logger.debug("add_data: processing %s", IF)
           IFidx = int(IF[-1])-1
           IFpwr = self.IFpower[data_row_index][IF]
-          tone_indices = list(tone_chnls) # define the channels to be selected
-          num_tones = len(tone_indices)
-          for tone in tone_chnls:
-            tonetabhdu.data[tone_row_index]['SCAN'] = scan   # int
-            self.logger.debug("add_data: processing tone(%d) is %d",
-                              subch_tone_idx, tone)
-            # CYCLE increments by 1 for each row in the scan
-            tonetabhdu.data[tone_row_index]['CYCLE'] = subch_tone_idx + 1
-            # all the following are the same for each tone in the subchannel
-            tonetabhdu.data[tone_row_index]['DATE-OBS'] = \
+          
+          if tonetabhdu:
+            for tone in tone_chnls:
+              tonetabhdu.data[tone_row_index]['SCAN'] = scan   # int
+              self.logger.debug("add_data: processing tone(%d) is %d",
+                                subch_tone_idx, tone)
+              # CYCLE increments by 1 for each row in the scan
+              tonetabhdu.data[tone_row_index]['CYCLE'] = subch_tone_idx + 1
+              # all the following are the same for each tone in the subchannel
+              tonetabhdu.data[tone_row_index]['DATE-OBS'] = \
                                            "%4d/%02d/%02d" % (year, month, day)
-            tonetabhdu.data[tone_row_index]['UNIXtime'] = startUXtime
-            tonetabhdu.data[tone_row_index]['TIME'] = \
+              tonetabhdu.data[tone_row_index]['UNIXtime'] = startUXtime
+              tonetabhdu.data[tone_row_index]['TIME'] = \
                            tonetabhdu.data[tone_row_index]['UNIXtime']-midnight
-            tonetabhdu.data[tone_row_index]['EXPOSURE'] = thisdata[0]['count']
-            tonetabhdu.data[tone_row_index]['BANDWIDT'] = \
+              tonetabhdu.data[tone_row_index]['EXPOSURE'] = thisdata[0]['count']
+              tonetabhdu.data[tone_row_index]['BANDWIDT'] = \
                                      num_tonespec_chls*tabhdu.header['FREQRES']
-            tonetabhdu.data[tone_row_index]['OBSFREQ'] = obsfreq + \
+              tonetabhdu.data[tone_row_index]['OBSFREQ'] = obsfreq + \
                                           (tone-65536)*tabhdu.header['FREQRES']
-            tonetabhdu.data[tone_row_index]['CDELT1'] = \
+              tonetabhdu.data[tone_row_index]['CDELT1'] = \
                                                        tabhdu.header['FREQRES']
-            self.logger.debug("add_data: freq step is %f",
+              self.logger.debug("add_data: freq step is %f",
                               tonetabhdu.data[tone_row_index]['CDELT1'])
-            halfband = num_tonespec_chls/2 # half the number of tone band chls
-            tonetabhdu.data[tone_row_index]['CRPIX1'] = halfband
-            # 
-            #tonetabhdu.data[tone_row_index]['CRVAL1'] = obsfreq
-            # the frequency of the channel nearest to the tone
-            nearest_chnl_freq = obsfreq + \
+              halfband = num_tonespec_chls/2 # half the number of tone band chls
+              tonetabhdu.data[tone_row_index]['CRPIX1'] = halfband
+              # 
+              # the frequency of the channel nearest to the tone
+              nearest_chnl_freq = obsfreq + \
                    (tone-65536)*tonetabhdu.data[tone_row_index]['CDELT1']
-            tonefreq_kHz = (nearest_chnl_freq)/1000
-            tonefreq = 1000*round(tonefreq_kHz)
-            # center of the 16 channel spectrum extract
-            tonetabhdu.data[tone_row_index]['CRVAL1'] = nearest_chnl_freq
-            self.logger.debug("add_data: tone frequency is %f", tonefreq)
-            # get the data around the tone.
-            tonetabhdu.data[tone_row_index]['TONES'][IFidx,:] = \
+              tonefreq_kHz = (nearest_chnl_freq)/1000
+              tonefreq = 1000*round(tonefreq_kHz)
+              # center of the 16 channel spectrum extract
+              tonetabhdu.data[tone_row_index]['CRVAL1'] = nearest_chnl_freq
+              self.logger.debug("add_data: tone frequency is %f", tonefreq)
+              # get the data around the tone.
+              tonetabhdu.data[tone_row_index]['TONES'][IFidx,:] = \
                                 thisdata[IF+'-ps'][tone-halfband:tone+halfband]
-            # now fit the tone (freq in MHz)
-            toneband_channels = numpy.arange(num_tonespec_chls)-halfband
-            self.logger.debug("add_data: tone band channel numbers: %s",
+              # now fit the tone (freq in MHz)
+              toneband_channels = numpy.arange(num_tonespec_chls)-halfband
+              self.logger.debug("add_data: tone band channel numbers: %s",
                                                              toneband_channels)
-            x = (tonetabhdu.data[tone_row_index]['CRVAL1'] + \
-                                 toneband_channels * \
-                                 tonetabhdu.data[tone_row_index]['CDELT1'])/1e6
-            y = tonetabhdu.data[tone_row_index]['TONES'][IFidx,:]
-            self.logger.debug("add_data: x = %s", x)
-            self.logger.debug("add_data: y = %s", y)
-            
-            est_bias = numpy.append(y[:5], y[-6:]).mean()
-            initial_guess = (est_bias, y[halfband], tonefreq/1e6,
+              x = (tonetabhdu.data[tone_row_index]['CRVAL1'] + \
+                                  toneband_channels * \
+                                  tonetabhdu.data[tone_row_index]['CDELT1'])/1e6
+              y = tonetabhdu.data[tone_row_index]['TONES'][IFidx,:]
+              self.logger.debug("add_data: x = %s", x)
+              self.logger.debug("add_data: y = %s", y)
+              if not numpy.any(y):
+                # y is all zeros.  Give up
+                tonetabhdu.data[tone_row_index]['BASELINE'][IFidx,0,0,:] = \
+                                                                       nanarray
+                tonetabhdu.data[tone_row_index]['TONEAMP'][IFidx,0,0,:]  = \
+                                                                       nanarray
+                tonetabhdu.data[tone_row_index]['TONEOFST'][IFidx,0,0,:] = \
+                                                                       nanarray
+                tonetabhdu.data[tone_row_index]['TONEWIDT'][IFidx,0,0,:] = \
+                                                                       nanarray
+                continue
+              est_bias = numpy.append(y[:5], y[-6:]).mean()
+              initial_guess = (est_bias, y[halfband], tonefreq/1e6,
                              tabhdu.header['FREQRES']/1e6)
-            self.logger.debug("add_data: initial_guess = %s", initial_guess)
-            popt, pcov = curve_fit(biased_scaled_sinc, x, y,
+              self.logger.debug("add_data: initial_guess = %s", initial_guess)
+              popt, pcov = curve_fit(biased_scaled_sinc, x, y,
                                    p0=(initial_guess))
-            self.logger.debug("add_data: pars = %s", popt)
-            self.logger.debug("add_data: covars = %s", pcov)
-            bias, amp, offset, std = popt
-            dbias, damp, doffset, dstd = numpy.sqrt(numpy.diag(pcov))
-            tonetabhdu.data[tone_row_index]['BASELINE'] = \
+              self.logger.debug("add_data: pars = %s", popt)
+              self.logger.debug("add_data: covars = %s", pcov)
+              bias, amp, offset, std = popt
+              dbias, damp, doffset, dstd = numpy.sqrt(numpy.diag(pcov))
+              tonetabhdu.data[tone_row_index]['BASELINE'][IFidx,0,0,:] = \
                                                      numpy.array([bias, dbias])
-            tonetabhdu.data[tone_row_index]['TONEAMP'] = \
+              tonetabhdu.data[tone_row_index]['TONEAMP'][IFidx,0,0,:] = \
                                                        numpy.array([amp, damp])
-            tonetabhdu.data[tone_row_index]['TONEOFST'] = \
+              tonetabhdu.data[tone_row_index]['TONEOFST'][IFidx,0,0,:] = \
                                                  numpy.array([offset, doffset])
-            tonetabhdu.data[tone_row_index]['TONEWIDT'] = \
+              tonetabhdu.data[tone_row_index]['TONEWIDT'][IFidx,0,0,:] = \
                                                        numpy.array([std, dstd])
-            # remove the tones from the IF power data
-            #    we need the map the channels for 'x' into the 
-            IFpwr[tone + toneband_channels] -= \
+              # remove the tones from the IF power data
+              #    we need the map the channels for 'x' into the 
+              IFpwr[tone + toneband_channels] -= \
                                 biased_scaled_sinc(x, bias, amp, offset, std)
             
-            if IF == "IF2": # should be [list of IFs][-1] !!!!!!!!!!!!!!!!!!!
-              # because both IF go into the same row but different positions on
-              # the POL axis
-              tone_row_index += 1
-            subch_tone_idx += 1
-            # end of tone loop
-          # save smoothed IF power spectra
-          tabhdu.data[data_row_index]['IFSPECTR'][IFidx, 0, 0,:] = \
-                                 reduce_spectrum_channels(IFpwr, num_chan=1024)
+              if IF == "IF2": # should be [list of IFs][-1] !!!!!!!!!!!!!!!!!!!
+                # because both IF go into the same row but different positions on
+                # the POL axis
+                tone_row_index += 1
+                subch_tone_idx += 1
+              # end of tone loop
+            # save smoothed IF power spectra
+            # axis specs not needed; simplest set for relative frequenies is::
+            #   delta   = bandwidth/num_chan
+            #   ref_pix = num_chan/2
+            #   ref_val = delta/2
+            newspec, newrefval, newrefpix, newdelta = \
+                        reduce_spectrum_channels(IFpwr, 0, 0, 0,
+                                                 num_chan=1024)
+            tabhdu.data[data_row_index]['IFSPECTR'][IFidx, 0, 0,:] = newspec
+            # end of tones section
           # compute the average power
-          mean = IFpwr.mean()
-          tabhdu.data[data_row_index]['avgpower'][IFidx,0,0,0] = mean
+          tabhdu.data[data_row_index]['TSYS'][IFidx,0,0,0] = IFpwr.mean()
+          tsys_col_idx = tabhdu.data.columns.names.index('TSYS')
+          tabhdu.data.columns.units[tsys_col_idx] = "counts"
           # end of IF loop
-        # the data in dataset in keyed on scan number
+        # the data in dataset is keyed on scan number
+        refval = tabhdu.data[data_row_index]['OBSFREQ']
+        refpix = num_chan/2
+        delta  = bandwidth/num_chan
         self.logger.debug("add_data: loading SPECTRUM")
-        tabhdu.data[data_row_index]['SPECTRUM'][0, 0, 0,:] = \
-              reduce_spectrum_channels(thisdata['I'], num_chan=num_Stokes_chan)
-        tabhdu.data[data_row_index]['SPECTRUM'][1, 0, 0,:] = \
-              reduce_spectrum_channels(thisdata['Q'], num_chan=num_Stokes_chan)
-        tabhdu.data[data_row_index]['SPECTRUM'][2, 0, 0,:] = \
-              reduce_spectrum_channels(thisdata['U'], num_chan=num_Stokes_chan)
-        tabhdu.data[data_row_index]['SPECTRUM'][3, 0, 0,:] = \
-              reduce_spectrum_channels(thisdata['V'], num_chan=num_Stokes_chan)
+        I, newrefval, newrefpix, newdelta = \
+                 reduce_spectrum_channels(thisdata['I'], refval, refpix, delta,
+                                          num_chan=num_Stokes_chan)
+        Q, newrefval, newrefpix, newdelta = \
+                 reduce_spectrum_channels(thisdata['Q'], refval, refpix, delta,
+                                          num_chan=num_Stokes_chan)
+        U, newrefval, newrefpix, newdelta = \
+                 reduce_spectrum_channels(thisdata['U'], refval, refpix, delta,
+                                          num_chan=num_Stokes_chan)
+        V, newrefval, newrefpix, newdelta = \
+                 reduce_spectrum_channels(thisdata['V'], refval, refpix, delta,
+                                           num_chan=num_Stokes_chan)
+        tabhdu.data[data_row_index]['SPECTRUM'][0, 0, 0,:] = I
+        tabhdu.data[data_row_index]['SPECTRUM'][1, 0, 0,:] = Q
+        tabhdu.data[data_row_index]['SPECTRUM'][2, 0, 0,:] = U
+        tabhdu.data[data_row_index]['SPECTRUM'][3, 0, 0,:] = V
+        tabhdu.data[data_row_index]['CRVAL1'] = newrefval + delta/2
+        #tabhdu.data[data_row_index]['CRPIX1'] = newrefpix
+        tabhdu.data[data_row_index]['CDELT1'] = newdelta
+        self.logger.info("add_data: finished row %d scan %d cycle %d",
+                         data_row_index, tabhdu.data[data_row_index]['SCAN'],
+                                         tabhdu.data[data_row_index]['CYCLE'])
         data_row_index += 1
-        """
-          # set up the fit
-          y = self.IFpower[data_row_index][IF]
-          initial_std = 2.0
-          popt, pcov = curve_fit(MMgauss, x, y,
-                                 p0=(-offset, initial_std)+tone_amps)
-          position,std = popt[:2]
-          amps = popt[2:]
-          self.logger.debug("add_data: %s position=%f, std=%f",
-                                                             IF, position, std)
-          self.logger.debug("add_data: %s tone amplitudes: %s", IF, amps)
-          # add the fit results to table
-          tabhdu.data[data_row_index]['TONEOFST'][IFidx,0,0,0] = position
-          tabhdu.data[data_row_index]['TONEWIDT'][IFidx,0,0,0] = std
-          tabhdu.data[data_row_index]['TONEAMPS'][IFidx,0,0,:] = amps
-          
-        # extact the tone data
-        for tone in tone_chnls:
-          tonetabhdu.data[tone_row_index]['SCAN'] = scan   # int
-          self.logger.debug("add_data: processing tone(%d) is %d",
-                            tone_idx, tone)
-          # CYCLE increments by 1 for each row in the scan
-          tonetabhdu.data[tone_row_index]['CYCLE'] = tone_idx + 1
-          tonetabhdu.data[tone_row_index]['DATE-OBS'] = \
-                                           "%4d/%02d/%02d" % (year, month, day)
-          tonetabhdu.data[tone_row_index]['UNIXtime'] = startUXtime
-          tonetabhdu.data[tone_row_index]['TIME'] = \
-                           tonetabhdu.data[tone_row_index]['UNIXtime']-midnight
-          tonetabhdu.data[tone_row_index]['EXPOSURE'] = thisdata[0]['count']
-          tonetabhdu.data[tone_row_index]['BANDWIDT'] = \
-                                                   256*tabhdu.header['FREQRES']
-          tonetabhdu.data[tone_row_index]['TAMBIENT'] = weather[0]
-          tonetabhdu.data[tone_row_index]['PRESSURE'] = weather[1]
-          tonetabhdu.data[tone_row_index]['HUMIDITY'] = weather[2]
-          tonetabhdu.data[tone_row_index]['WINDSPEE'] = weather[3]
-          tonetabhdu.data[tone_row_index]['WINDDIRE'] = weather[4]
-          tonetabhdu.data[tone_row_index]['OBSFREQ'] = obsfreq + \
-                                          (tone-65536)*tabhdu.header['FREQRES']
-          tonetabhdu.data[tone_row_index]['CDELT1'] = tabhdu.header['FREQRES']
-          tonetabhdu.data[tone_row_index]['TONES'][0,:] = \
-                                          thisdata['IF1-ps'][tone-128:tone+128]
-          tonetabhdu.data[tone_row_index]['TONES'][1,:] = \
-                                          thisdata['IF2-ps'][tone-128:tone+128]
-          tone_idx += 1
-          tone_row_index += 1
-        # after all the tones have been removed, compute the average
-        for IF in ['IF1', 'IF2']:
-          #   first take out the tones
-          IFidx = int(IF[-1])-1
-          offset = tabhdu.data[data_row_index]['TONEOFST'][IFidx,0,0,0]
-          std = tabhdu.data[data_row_index]['TONEWIDT'][IFidx,0,0,0]
-          amps = list(tabhdu.data[data_row_index]['TONEAMPS'][IFidx,0,0,:])
-          self.logger.debug("add_data: std, offset: %f, %f", std, offset)
-          self.logger.debug("add_data: TONEAMPS: %s type %s", amps, type(amps))
-          IFpwr = self.IFpower[data_row_index][IF] - \
-                                                 MMgauss(x, offset, std, *amps)
-          # save smoothed IF power spectra
-          tabhdu.data[data_row_index]['IFSPECTR'][IFidx, 0, 0,:] = \
-                                 reduce_spectrum_channels(IFpwr, num_chan=1024)
-          # compute the average power
-          mean = IFpwr.mean()
-          tabhdu.data[data_row_index]['avgpower'][IFidx,0,0,0] = mean
-        """
-    # when all the scans are done, optionally estimate system temperatures
-    if estimate_Tsys:
-      tabhdu = self.fit_mean_power_to_airmass(config, cfg_key, tabhdu)
-
+        # end subch loop
+      # end scan loop
     return tabhdu, tonetabhdu
-
-  def fit_mean_power_to_airmass(self, config, cfg_key, tabhdu):
-    """
-    fits the mean power data vs airmass to the radiative transfer equation
-    """
-    def opacity_fitting(x, a, tau):
-      x_rad = numpy.deg2rad(x)
-      x_sec = 1/numpy.sin(x_rad)
-      return a + tau*x_sec
-      
-    # get the system temperature
-    fe = config[cfg_key]['FrontEnd'][self.fe_key]
-    
-    # subch 1 is in the even numbered rows:  
-    # subch 2 is in the odd numbered rows    
-    # the first two rows in a set of four are on source 
-    # the second two rows in a set of four are off source
-    # subch1 on is  [0::4] (subch 0, pos 0)
-    # subch2 on is  [1::4] (subch 1, pos 0)
-    # subch1 off is [2::4] (subch 0, pos 1)
-    # subch2 off is [3::4] (subch 1, pos 1)
-    for IFidx in [0,1]: # IF1 and IF2
-      pol = ["R","L"][IFidx]
-      Tvac = fe.Tsys_vacuum(pol=pol)
-      msg = "estimated zenith IF%d Tsys in vacuum= %6.2f" % (IFidx,Tvac)
-      tabhdu.header.add_history(msg)
-      for subch in [0,1]: # 1, 2
-        mean_power = tabhdu.data['avgpower'][:,IFidx,0,0,0][subch::2]
-        elevation  = tabhdu.data['ELEVATIO'][subch::2]
-        # get an array of the 'nan' values in the elevations
-        good_elev = ~numpy.isnan(elevation)
-        # extract the good values
-        elv = elevation[good_elev]
-        pwr = mean_power[good_elev]
-        # fit the data
-        popt, pcov = curve_fit(opacity_fitting, elv, pwr, p0=[0, 0])
-        intercept, slope = popt[0], popt[1]
-        self.logger.debug("fit_mean_power_to_airmass: intercept, slope: %f, %f",
-                        intercept, slope)
-        msg="IF%d, subch%d gain=%9.3e counts, gain_slope=%9.3e counts/airmass"\
-              % (IFidx+1, subch+1, intercept, slope)
-        tabhdu.header.add_history(msg)
-        gain = Tvac/intercept
-        K_per_am = gain*slope
-        tabhdu.data['TSYS'][:,IFidx,0,0,0][subch::2] = gain * mean_power
-    return tabhdu
     
 if __name__ == "__main__":
   examples = """
@@ -1099,13 +1076,14 @@ Examples
   init_logging(mylogger,
                  loglevel = get_loglevel(args.file_loglevel),
                  consolevel = get_loglevel(args.console_loglevel),
-                 logname = args.logpath+"SAO2SDFITS.log")
+                 logname = args.logpath+"WVSR2SDFITS.log")
   mylogger.debug("WVSR2SDITS args: %s", args)
   
   yearstr, doystr = args.date.split("/")
   year = int(yearstr)
   doy = int(doystr)
   
+  mylogger.critical(" WVSR2SDFITS started")
   # note that this does not handle recording sessions with multiple antennas
   obsdir, realdir, project_dir, datadir, wvsrdir, fftdir = \
                             get_session_dirs(args.project, args.dss, year, doy)
@@ -1159,8 +1137,9 @@ Examples
       config[key] = station_configuration(None, args.project, dss, year, doy,
                                           rxband[key])
       # get a manager for the NMC log for this session.
-      NMClogmanager[key] = NMClogManager(station=dss, year=year, DOY=doy,
-                                starttime=starttime, use_portal=False)
+      NMClogmanager[key] = NMClogManager(project=args.project, station=dss,
+                                         year=year, DOY=doy, starttime=starttime,
+                                         use_portal=False)
       mylogger.debug("WVSR2SDITS NMC metadata available: %s",
                         NMClogmanager[wvsr].metadata.keys())
       NMClogserver[key] = NMC_log_server(args.project, dss, year, doy)
@@ -1168,7 +1147,7 @@ Examples
       raise RuntimeError("single IF case not yet coded")
   # Now we can start a FITSfile
   tel = config[config.keys()[0]]['Telescope'][args.dss]
-  ff = FITSfile_from_WVSR(tel, estimate_Tsys)
+  ff = FITSfile_from_WVSR(tel)
   
   # make an extension for every backend and start table headers and columns.
   # Because the extensions are for different back ends for the same observing
@@ -1186,10 +1165,12 @@ Examples
     ff.make_WVSR_table(config, collector, NMClogserver, cfg_key)
   
   hdulist = pyfits.HDUList([ff.prihdu]+ff.tables.values())
-  parts = datadir.split('/')
+  parts = realdir.split('/')
+  parts.remove('projects')
   parts[3] = 'RA_data'; parts[4] = 'FITS'
   fitspath = "/".join(parts)
   mkdir_if_needed(fitspath)
   fname = fitspath + "WVSR" + "_%4d-%03d-%s.fits" % (year, doy, starttime)
+  mylogger.debug("WVSR2SDFITS writing %s", fname)
   hdulist.writeto(fname, clobber=True)
-
+  mylogger.critical(" WVSR2SDFITS ended")
