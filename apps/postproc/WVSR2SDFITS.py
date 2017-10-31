@@ -24,7 +24,7 @@ import IPython
 IPython.version_info = IPython.release.version.split('.')
 IPython.version_info.append('')
 
-from pylab import * #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+#from pylab import * #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
 import astropy.io.fits as pyfits
 import astropy.units as u
@@ -53,7 +53,7 @@ from Automation.WVSR import get_Naudet_FFT_dir, make_datadir_name
 from Data_Reduction import get_obs_dirs, get_obs_session, select_data_files
 from Data_Reduction import get_num_chans, reduce_spectrum_channels
 from Data_Reduction.DSN.WVSR.SpecData import read_FFT_file
-from Data_Reduction.FITS import FITSfile
+from Data_Reduction.FITS.DSNFITS import FITSfile
 from Data_Reduction.tipping import airmass
 from DatesTimes import datetime_to_UnixTime
 from local_dirs import sci_proj_path
@@ -756,7 +756,7 @@ Examples
                type = str,
                default = "2016/237",
                help = 'Date of observation as YEAR/DOY string')
-  p.add_argument('-D', '--DSS',
+  p.add_argument('-D', '--dss',
                dest = 'dss',
                type = int,
                default = 14,
@@ -774,13 +774,15 @@ Examples
                  loglevel = get_loglevel(args.file_loglevel),
                  consolevel = get_loglevel(args.console_loglevel),
                  logname = args.logpath+"WVSR2SDFITS.log")
+                 
+  mylogger.critical(" WVSR2SDFITS started")
   mylogger.debug("WVSR2SDITS args: %s", args)
-  
+  if args.project[:4] != 'AUTO':
+    raise RuntimeError("project name must start with AUTO")
   yearstr, doystr = args.date.split("/")
   year = int(yearstr)
   doy = int(doystr)
   
-  mylogger.critical(" WVSR2SDFITS started")
   # note that this does not handle recording sessions with multiple antennas
   obsdir, realdir, project_dir, datadir, wvsrdir, fftdir = \
                             get_session_dirs(args.project, args.dss, year, doy)
