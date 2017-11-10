@@ -508,6 +508,7 @@ class FITSfile_from_WVSR(FITSfile):
           self.logger.warning(
           "add_data: read_FFT_file return not a numpy array for scan %d %s",
             scan, subch)
+          continue
         # same frequency and bandwidth for both IFs
         tabhdu.data[data_row_index]['BANDWIDT'] = \
                   self.collector.wvsr_cfg[cfg_key][1]['chan_id 1']['bandwidth']
@@ -792,7 +793,7 @@ Examples
   
   # get the start and end time of the session
   timesfiles = glob.glob(obsdir+"times-*")
-  mylogger.debug(" found %s", timesfiles)
+  mylogger.debug("WVSR2SDITS found %s", timesfiles)
   if len(timesfiles) < 1:
     raise RuntimeError("WVSR2SDITS: no times file is %s" % obsdir)
   elif len(timesfiles) > 1:
@@ -801,7 +802,7 @@ Examples
   starttime = get_start_time(timesfiles[0])
 
   # get a metadata manager for the WVSR log for this session
-  collector = WVSRmetadataCollector(args.project, args.dss, year, doy)
+  collector = WVSRmetadataCollector(args.project, args.dss, year, doy, starttime)
   collector.sources = sourcedata
   mylogger.debug("__init__: equipment: %s", collector.equip)
   # add Backend to the standard equipment

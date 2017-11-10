@@ -38,23 +38,41 @@ class WVSRmetadataCollector:
     wvsrlogs     - list of log file names
     year         - year of observation
   """
-  def __init__(self, project, dss, year, doy):
+  def __init__(self, project, dss, year, doy, time):
     """
     initiate a WVSR configuration description collector
     
     Mainly this creates two dicts::
       wvsr_cfg - configuration for one WVSR
       fft_meta - details on the processing all the scans
+      
+    @param project : AUTO project name
+    @type  project : str
+    
+    @param dss : DSN station
+    @type  dss : int
+    
+    @type year : int
+    @type doy  : int
+    
+    @param time : start time without colon: HHMM
+    @type  time : str
     """
     self.project = project
     self.dss = dss
     self.year = year
     self.doy = doy
+    self.time = time
     self.logger = logging.getLogger(logger.name+".WVSRmetadataCollector")
-    self.logger.info("WVSRmetadataCollector initializing")
+    self.logger.info("__init__: WVSRmetadataCollector initializing")
     # get all the directories involved
     auto_obsdir, self.real_obsdir, self.project_dir, self.datadir, \
         self.wvsrdir, self.fftdir = get_session_dirs( project, dss, year, doy)
+    if self.wvsrdir:
+      pass
+    else:
+      self.logger.error("__init__: no WVSR data directory")
+      raise RuntimeError("no WVSR data directory")
     # get the high-level metadata
     #get_all_source_data(self.project_dir)
     if self.get_scan_info():
@@ -107,11 +125,15 @@ class WVSRmetadataCollector:
       In [17]: collector.wvsrnames
       Out[17]: {'wvsr2': 'WVSR2_10.16-237-084500'}
     """
-    self.wvsrlogs = glob.glob(self.wvsrdir+"/WVSR*")
+    wvsrlogs = glob.glob(self.wvsrdir+"/WVSR*")
+    self.logger.debug("get_WVSR_names: logs: %s", wvsrlogs)
     self.wvsrnames = {}
-    for f in self.wvsrlogs:
+    self.wvsrlogs = []
+    for f in wvsrlogs:
       logname = basename(f)
-      self.wvsrnames[logname[:5].lower()] = logname
+      if re.search(self.time, logname):
+        self.wvsrlogs.append(f)
+        self.wvsrnames[logname[:5].lower()] = logname
     self.logger.debug("get_WVSR_names: %s", self.wvsrnames)
   
   def get_metadata_from_WVSR_logs(self):
@@ -202,7 +224,7 @@ class WVSRmetadataCollector:
         # take the variable name from the 4th item leaving off the colon
         # and add item to EXPID dict
         parts = line.split()
-        self.logger.debug("parse_WVSR_FFT_logs: EXPID line parts: %s", parts)
+        self.logger.debug("parse_WVSR_log: EXPID line parts: %s", parts)
         wvsrID = parts[2]
         user = parts[-2]
         exec(parts[3][:-1]+"= "+"'"+str(parts[8])+"'")
@@ -220,7 +242,7 @@ class WVSRmetadataCollector:
         parts = line.split()
         chan_str = parts[3][:-1]
         subchan_str = "'"+parts[5]+" ' + str(int("+parts[7][:-1]+"))"
-        self.logger.debug("parse_WVSR_FFT_logs: for CHAN doing %s with %s",
+        self.logger.debug("parse_WVSR_log: for CHAN doing %s with %s",
                      chan_str, subchan_str)
         # create subchannel item in CHAN if needed
         if CHAN == {}:
@@ -242,7 +264,7 @@ class WVSRmetadataCollector:
       if re.search("rsp_ddclo", line): # subchannel offset LO
         # create subchannel offset
         parts = line.split()
-        self.logger.debug("parse_WVSR_FFT_logs: line parts: %s", parts)
+        self.logger.debug("parse_WVSR_log: line parts: %s", parts)
         dsp, subchan = parts[8].split(':')
         offset = int(float(parts[9])) # don't need fractional Hz
         # assign to correct channel
@@ -252,46 +274,46 @@ class WVSRmetadataCollector:
               CHAN[key]["chan_id "+subchan]["sfro"] = offset
             else:
               self.logger.info(
-                  "parse_WVSR_FFT_logs: no subchannel ID %s for IF channel %s",
+                  "parse_WVSR_log: no subchannel ID %s for IF channel %s",
                      subchan,key)
       if re.search("IFS\\[.\\]:.*PROGRESS", line): # signal source for IF chanl
         # IF switch inputs
-        self.logger.debug("parse_WVSR_FFT_logs: IFS from line: %s", line)
+        self.logger.debug("parse_WVSR_log: IFS from line: %s", line)
         parts = line.split()
-        self.logger.debug("parse_WVSR_FFT_logs: line parts: %s", parts)
+        self.logger.debug("parse_WVSR_log: line parts: %s", parts)
         # exclude the colon from the signal source
         exec(parts[3][:-1]+"= '"+str(parts[10][:-1])+"'")
       if re.search("ATT\\[.\\]:.*cur_amp", line): # attenuator and power
-        self.logger.debug("parse_WVSR_FFT_logs: ATT line parts: %s", parts)
+        self.logger.debug("parse_WVSR_log: ATT line parts: %s", parts)
         parts = line.split()
         UT = WVSR_script_time_to_timestamp(*parts[:2])
         try:
           # this executes something like" "ATT[2]['att']=15"
-          #self.logger.debug("parse_WVSR_FFT_logs: trying %s",
+          #self.logger.debug("parse_WVSR_log: trying %s",
           #                  parts[3][:-1]+"['"+parts[4]+"']"+"="+parts[6].strip(','))
           #exec(parts[3][:-1]+"['"+parts[4]+"']"+"="+parts[6].strip(','))
-          self.logger.debug("parse_WVSR_FFT_logs: trying %s",
+          self.logger.debug("parse_WVSR_log: trying %s",
                             parts[3][:-1] + \
                              "["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
           exec(parts[3][:-1]+"["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
         except KeyError,details:
           # ATT[2] is not defines as a dict
-          self.logger.debug("parse_WVSR_FFT_logs: failed because %s", details)
+          self.logger.debug("parse_WVSR_log: failed because %s", details)
           # this executes something like:'ATT[2]={1472028315: {}}'
-          self.logger.debug("parse_WVSR_FFT_logs: trying %s",
+          self.logger.debug("parse_WVSR_log: trying %s",
                             parts[3][:-1]+"={"+str(UT)+": {}}")
           exec(parts[3][:-1]+"={"+str(UT)+": {}}")
           # this executes something like "ATT[2][1472028315]['att']=15"
-          self.logger.debug("parse_WVSR_FFT_logs: trying %s",
+          self.logger.debug("parse_WVSR_log: trying %s",
                             parts[3][:-1]+"["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
           exec(parts[3][:-1]+"["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
           # now that the dict exists add the power
           exec(parts[3][:-1]+"["+str(UT)+"]['"+parts[10]+"']"+"="+parts[12].strip(',')) 
-    self.logger.info("parse_WVSR_FFT_logs: EXPID = %s", EXPID)
-    self.logger.info("parse_WVSR_FFT_logs: RF_TO_IF_LO = %s", RF_TO_IF_LO)
-    self.logger.info("parse_WVSR_FFT_logs: IFS = %s", IFS)
-    self.logger.info("parse_WVSR_FFT_logs: CHAN = %s", CHAN)
-    self.logger.info("parse_WVSR_FFT_logs: ATT = %s", ATT)
+    self.logger.info("parse_WVSR_log: EXPID = %s", EXPID)
+    self.logger.info("parse_WVSR_log: RF_TO_IF_LO = %s", RF_TO_IF_LO)
+    self.logger.info("parse_WVSR_log: IFS = %s", IFS)
+    self.logger.info("parse_WVSR_log: CHAN = %s", CHAN)
+    self.logger.info("parse_WVSR_log: ATT = %s", ATT)
     # add to WVSR configuration
     self.wvsr_cfg[wvsrID] = {'user': user,
                              'from log': basename(logname)}
