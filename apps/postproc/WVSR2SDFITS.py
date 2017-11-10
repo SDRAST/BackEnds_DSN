@@ -834,7 +834,7 @@ Examples
         else:
           raise RuntimeError("WVSR2SDFITS can only handle one antenna")
       config[key] = station_configuration(None, args.project, dss, year, doy,
-                                          rxband[key])
+                                          starttime, rxband[key])
       # get a manager for the NMC log for this session.
       NMClogmanager[key] = NMClogManager(project=args.project, station=dss,
                                          year=year, DOY=doy, starttime=starttime,
