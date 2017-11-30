@@ -709,7 +709,7 @@ class FITSfile_from_WVSR(FITSfile):
           # compute the average power
           tabhdu.data[data_row_index]['TSYS'][IFidx,0,0,0] = IFpwr.mean()
           tsys_col_idx = tabhdu.data.columns.names.index('TSYS')
-          tabhdu.data.columns.units[tsys_col_idx] = "counts"
+          tabhdu.data.columns['TSYS'].unit = "count"
           # end of IF loop
         # the data in dataset is keyed on scan number
         refval = tabhdu.data[data_row_index]['OBSFREQ']

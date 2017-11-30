@@ -225,8 +225,8 @@ class WVSRmetadataCollector:
         # and add item to EXPID dict
         parts = line.split()
         self.logger.debug("parse_WVSR_log: EXPID line parts: %s", parts)
-        wvsrID = parts[2]
-        user = parts[-2]
+        wvsrID = parts[2] # third item
+        user = parts[-2]  # second last item
         exec(parts[3][:-1]+"= "+"'"+str(parts[8])+"'")
       if re.search('RF_TO_IF_LO\[',line): # receiver or first LO
         # parse a log file line like::
