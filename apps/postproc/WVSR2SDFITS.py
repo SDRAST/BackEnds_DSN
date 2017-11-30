@@ -16,7 +16,7 @@ Steps::
     get_hardware_metadata()            # BACKEND, MAXIS1, FREQRES
     add_time_dependent_columns()       # LST, AZIMUTH, ELEVATIO
     add_IF_dependent_columns()         # TSYS
-    make_data_axis()                   # SPECTRUM
+    make_data_axis()                   # DATA
     make_offset_columns()              # BEAMxOFF
     add_data()
 """
@@ -244,7 +244,7 @@ class FITSfile_from_WVSR(FITSfile):
     self.logger.debug("make_WVSR_table: computed scan shape: %s", dimsval)
     data_format = str(fmt_multiplier)+"E"
     self.logger.debug("make_WVSR_table: data_format = %s", data_format)
-    self.columns += pyfits.Column(name='SPECTRUM',
+    self.columns += pyfits.Column(name='DATA',
                              format=data_format, dim=dimsval)
 
     # add column for system temperatures
@@ -261,7 +261,7 @@ class FITSfile_from_WVSR(FITSfile):
       # Now describe the tone data structure
       num_subch = len(subchannel_names)
       total_num_tones = 0
-      for subch in subchannel_names: # count up the tones
+      for subch in subchannel_names: # count up total tones in both subchannels
         # there is one tone every MHz
         num_tones = \
             int(self.collector.wvsr_cfg[cfg_key][1][anysubch]['bandwidth']/1e6)
@@ -540,7 +540,7 @@ class FITSfile_from_WVSR(FITSfile):
           tabhdu.data[data_row_index]['WINDSPEE'] = numpy.nan
           tabhdu.data[data_row_index]['WINDDIRE'] = numpy.nan
         
-        datacubeshape = tabhdu.data[data_row_index]['SPECTRUM'].shape
+        datacubeshape = tabhdu.data[data_row_index]['DATA'].shape
         # the frequency axis is first in FITS/FORTRAN order and last (of four)
         # in PYTHON/C order
         num_Stokes_chan = datacubeshape[3]
@@ -559,12 +559,12 @@ class FITSfile_from_WVSR(FITSfile):
         # for first data axis (frequency)
         #      these are not needed here because they are computed when the
         #      number of channels is reduced
-        tabhdu.data[data_row_index]['CRVAL1'] = \
-                                         tabhdu.data[data_row_index]['OBSFREQ']
-        tabhdu.data[data_row_index]['CDELT1'] = \
-                        tabhdu.data[data_row_index]['SIDEBAND'] * \
-                        tabhdu.data[data_row_index]['BANDWIDT']/num_Stokes_chan
-        tabhdu.data[data_row_index]['CRPIX1'] = num_Stokes_chan/2 # at middle
+        #tabhdu.data[data_row_index]['CRVAL1'] = \
+        #                                 tabhdu.data[data_row_index]['OBSFREQ']
+        #tabhdu.data[data_row_index]['CDELT1'] = \
+        #                tabhdu.data[data_row_index]['SIDEBAND'] * \
+        #                tabhdu.data[data_row_index]['BANDWIDT']/num_Stokes_chan
+        #tabhdu.data[data_row_index]['CRPIX1'] = num_Stokes_chan/2 # at middle
        
         # second and third data axes (coordinates)
         RA, dec = \
@@ -698,9 +698,6 @@ class FITSfile_from_WVSR(FITSfile):
               # end of tone loop
             # save smoothed IF power spectra
             # axis specs not needed; simplest set for relative frequenies is::
-            #   delta   = bandwidth/num_chan
-            #   ref_pix = num_chan/2
-            #   ref_val = delta/2
             newspec, newrefval, newrefpix, newdelta = \
                         reduce_spectrum_channels(IFpwr, 0, 0, 0,
                                                  num_chan=1024)
@@ -715,7 +712,7 @@ class FITSfile_from_WVSR(FITSfile):
         refval = tabhdu.data[data_row_index]['OBSFREQ']
         refpix = num_chan/2
         delta  = bandwidth/num_chan
-        self.logger.debug("add_data: loading SPECTRUM")
+        self.logger.debug("add_data: loading DATA")
         I, newrefval, newrefpix, newdelta = \
                  reduce_spectrum_channels(thisdata['I'], refval, refpix, delta,
                                           num_chan=num_Stokes_chan)
@@ -728,12 +725,12 @@ class FITSfile_from_WVSR(FITSfile):
         V, newrefval, newrefpix, newdelta = \
                  reduce_spectrum_channels(thisdata['V'], refval, refpix, delta,
                                            num_chan=num_Stokes_chan)
-        tabhdu.data[data_row_index]['SPECTRUM'][0, 0, 0,:] = I
-        tabhdu.data[data_row_index]['SPECTRUM'][1, 0, 0,:] = Q
-        tabhdu.data[data_row_index]['SPECTRUM'][2, 0, 0,:] = U
-        tabhdu.data[data_row_index]['SPECTRUM'][3, 0, 0,:] = V
+        tabhdu.data[data_row_index]['DATA'][0, 0, 0,:] = I
+        tabhdu.data[data_row_index]['DATA'][1, 0, 0,:] = Q
+        tabhdu.data[data_row_index]['DATA'][2, 0, 0,:] = U
+        tabhdu.data[data_row_index]['DATA'][3, 0, 0,:] = V
         tabhdu.data[data_row_index]['CRVAL1'] = newrefval + delta/2
-        #tabhdu.data[data_row_index]['CRPIX1'] = newrefpix
+        tabhdu.data[data_row_index]['CRPIX1'] = newrefpix
         tabhdu.data[data_row_index]['CDELT1'] = newdelta
         self.logger.info("add_data: finished row %d scan %d cycle %d",
                          data_row_index, tabhdu.data[data_row_index]['SCAN'],
