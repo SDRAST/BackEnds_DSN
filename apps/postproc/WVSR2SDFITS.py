@@ -555,17 +555,7 @@ class FITSfile_from_WVSR(FITSfile):
           self.logger.error("add_data: IF mode %s is invalid; default to USB",
                             rx['IFmode'])
           tabhdu.data[data_row_index]['SIDEBAND'] = +1
-      
-        # for first data axis (frequency)
-        #      these are not needed here because they are computed when the
-        #      number of channels is reduced
-        #tabhdu.data[data_row_index]['CRVAL1'] = \
-        #                                 tabhdu.data[data_row_index]['OBSFREQ']
-        #tabhdu.data[data_row_index]['CDELT1'] = \
-        #                tabhdu.data[data_row_index]['SIDEBAND'] * \
-        #                tabhdu.data[data_row_index]['BANDWIDT']/num_Stokes_chan
-        #tabhdu.data[data_row_index]['CRPIX1'] = num_Stokes_chan/2 # at middle
-       
+             
         # second and third data axes (coordinates)
         RA, dec = \
           self.logserver[cfg_key].get_RAdec(startUXtime)
