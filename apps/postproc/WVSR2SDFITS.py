@@ -213,7 +213,6 @@ class FITSfile_from_WVSR(FITSfile):
     # add the backend data
     BE = config[key]['Backend'].wvsrs[key]
     self.get_hardware_metadata(BE)
-    #tonehead, tonecols = self.get_hardware_metadata(BE, tonehead, tonecols)
 
     # things like LST, wind, etc.
     self.add_time_dependent_columns(1)
