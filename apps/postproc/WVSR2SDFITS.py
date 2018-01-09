@@ -787,17 +787,26 @@ Examples
                        % len(timesfiles))
   starttime = get_start_time(timesfiles[0])
 
+  # get a manager for the NMC log for this session.
+  NMClogmanager = NMClogManager(project=args.project, station=dss,
+                                year=year, DOY=doy, starttime=starttime,
+                                use_portal=False)
+  mylogger.debug("WVSR2SDITS NMC metadata available: %s",
+                 NMClogmanager[wvsr].metadata.keys())
+  # the log server provides timed information from the NMC log
+  NMClogserver = NMC_log_server(args.project, dss, year, doy)
+  
   # get a metadata manager for the WVSR log for this session
-  collector = WVSRmetadataCollector(args.project, args.dss, year, doy, starttime)
+  collector = WVSRmetadataCollector(args.project, args.dss,
+                                    year, doy, starttime, NMClogserver)
   collector.sources = sourcedata
   mylogger.debug("__init__: equipment: %s", collector.equip)
+  
   # add Backend to the standard equipment
   #   at this point, the collector only knows about backend equipment so
-  # collector.equip.keys(), collector.wvsrnames.keys() and
-  # collector.wvsr_cfg.keys() are all the same.
+  #   collector.equip.keys(), collector.wvsrnames.keys() and
+  #   collector.wvsr_cfg.keys() are all the same.
   config = {}
-  NMClogmanager = {}
-  NMClogserver  = {}
   rxband = {}
   for wvsr in collector.wvsrnames:
     # how many BINTABLEs do we need?
@@ -822,13 +831,6 @@ Examples
           raise RuntimeError("WVSR2SDFITS can only handle one antenna")
       config[key] = station_configuration(None, args.project, dss, year, doy,
                                           starttime, rxband[key])
-      # get a manager for the NMC log for this session.
-      NMClogmanager[key] = NMClogManager(project=args.project, station=dss,
-                                         year=year, DOY=doy, starttime=starttime,
-                                         use_portal=False)
-      mylogger.debug("WVSR2SDITS NMC metadata available: %s",
-                        NMClogmanager[wvsr].metadata.keys())
-      NMClogserver[key] = NMC_log_server(args.project, dss, year, doy)
     else:
       raise RuntimeError("single IF case not yet coded")
   # Now we can start a FITSfile

@@ -38,7 +38,7 @@ class WVSRmetadataCollector:
     wvsrlogs     - list of log file names
     year         - year of observation
   """
-  def __init__(self, project, dss, year, doy, time):
+  def __init__(self, project, dss, year, doy, time, NMClogserver):
     """
     initiate a WVSR configuration description collector
     
@@ -74,7 +74,6 @@ class WVSRmetadataCollector:
       self.logger.error("__init__: no WVSR data directory")
       raise RuntimeError("no WVSR data directory")
     # get the high-level metadata
-    #get_all_source_data(self.project_dir)
     if self.get_scan_info():
       pass
     else:
