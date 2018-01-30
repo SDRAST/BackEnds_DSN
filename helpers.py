@@ -2,15 +2,17 @@
 """
 import glob
 import logging
+import os
 import re
 
 from os.path import basename, splitext
 
-from Automation import get_session_dirs
+from Automation import get_activity, get_session_dirs
 from Automation.sources import get_all_source_data
-from Automation.WVSR import parse_scan_files
+from Automation.WVSR import get_obs_session, parse_scan_files
 from Data_Reduction.DSN.WVSR.SpecData import get_channel_IDs
 from DatesTimes import WVSR_script_time_to_timestamp
+from local_dirs import act_proj_path, wvsr_fft_dir
 from MonitorControl.Configurations.DSN_standard import standard_equipment
 from support.lists import unique
 
@@ -38,7 +40,7 @@ class WVSRmetadataCollector:
     wvsrlogs     - list of log file names
     year         - year of observation
   """
-  def __init__(self, project, dss, year, doy, time, NMClogserver):
+  def __init__(self, project, dss, year, doy, time):
     """
     initiate a WVSR configuration description collector
     
@@ -53,6 +55,7 @@ class WVSRmetadataCollector:
     @type  dss : int
     
     @type year : int
+    
     @type doy  : int
     
     @param time : start time without colon: HHMM
@@ -66,55 +69,40 @@ class WVSRmetadataCollector:
     self.logger = logging.getLogger(logger.name+".WVSRmetadataCollector")
     self.logger.info("__init__: WVSRmetadataCollector initializing")
     # get all the directories involved
-    auto_obsdir, self.real_obsdir, self.project_dir, self.datadir, \
-        self.wvsrdir, self.fftdir = get_session_dirs( project, dss, year, doy)
+    auto_obsdir, self.real_obsdir, self.activity_dir, self.project_dir, \
+        self.datadir, self.wvsrdir, self.fftdir = \
+            get_session_dirs(project, dss, year, doy)
+    self.logger.debug("__init__: auto_obsdir: %s", auto_obsdir)
+    self.logger.debug("__init__: real_obsdir: %s", self.real_obsdir)
+    self.logger.debug("__init__: project_dir: %s", self.project_dir)
+    self.logger.debug("__init__: datadir: %s", self.datadir)
+    self.logger.debug("__init__: wvsrdir: %s", self.wvsrdir)
+    self.logger.debug("__init__: fftdir: %s", self.fftdir)
     if self.wvsrdir:
       pass
     else:
       self.logger.error("__init__: no WVSR data directory")
       raise RuntimeError("no WVSR data directory")
     # get the high-level metadata
-    if self.get_scan_info():
-      pass
-    else:
-      raise RuntimeError("no scan files found")
     self.get_WVSR_names()
-    self.get_metadata_from_WVSR_logs()
+    self.get_metadata_from_WVSR_logs() # this initializes scaninfo with sources
+    # get the parameters for each FFT configuration
+    self.get_metadata_from_FFT_logs()
+    # get scan information
+    #if self.get_scan_info():
+    #  pass
+    #else:
+    #  raise RuntimeError("no scan files found")
     self.equip = {}
     # specify station equipment for each IF
     for wvsr in self.wvsrnames:
       self.equip[wvsr] = {}
       self.logger.debug('__init__: %s config: %s', wvsr, self.wvsr_cfg[wvsr])
       for IF in self.wvsr_cfg[wvsr]['channels']:
-        self.logger.debug('__init__: %s IF %s config: %s', wvsr, IF, self.wvsr_cfg[wvsr][IF])
+        self.logger.debug('__init__: %s IF %s config: %s',
+                          wvsr, IF, self.wvsr_cfg[wvsr][IF])
         band = self.wvsr_cfg[wvsr][IF]['IF_source'].split('_')[1]
         self.equip[wvsr][IF] = standard_equipment(dss, band)
-    # get the parameters for each FFT configuration
-    self.get_metadata_from_FFT_logs()
-  
-  def get_scan_info(self):
-    """
-    get the metadata for channels and scans recorded
-    
-    Example::
-      In [12]: collector.scaninfo[6]
-      Out[12]: 
-      {'chan_id 1': '16-237-001-s0006_d14_RCP_LCP.wvsr.fft',
-       'chan_id 2': '16-237-002-s0006_d14_RCP_LCP.wvsr.fft',
-       'end': datetime.datetime(2016, 8, 24, 9, 42),
-       'source': 'w5w-fregg51-ref',
-       'start': datetime.datetime(2016, 8, 24, 9, 40, 30)}
-    """
-    self.scaninfo = parse_scan_files(self.real_obsdir)
-    if self.scaninfo:
-      self.scankeys = self.scaninfo.keys()
-      self.scankeys.sort()
-      # get IF channel IDs
-      self.chan_names = get_channel_IDs(self.scaninfo)
-      self.logger.debug("get_scan_info: channel keys: %s", self.chan_names)
-      return True
-    else:
-      return False
   
   def get_WVSR_names(self):
     """
@@ -134,6 +122,30 @@ class WVSRmetadataCollector:
         self.wvsrlogs.append(f)
         self.wvsrnames[logname[:5].lower()] = logname
     self.logger.debug("get_WVSR_names: %s", self.wvsrnames)
+  
+  def get_scan_info(self):
+    """
+    get the metadata for channels and scans recorded
+    
+    Example::
+      In [12]: collector.scaninfo[6]
+      Out[12]: 
+      {'chan_id 1': '16-237-001-s0006_d14_RCP_LCP.wvsr.fft',
+       'chan_id 2': '16-237-002-s0006_d14_RCP_LCP.wvsr.fft',
+       'end': datetime.datetime(2016, 8, 24, 9, 42),
+       'source': 'w5w-fregg51-ref',
+       'start': datetime.datetime(2016, 8, 24, 9, 40, 30)}
+    """
+    self.scaninfo = parse_scan_files(self.activity_dir)
+    if self.scaninfo:
+      self.scankeys = self.scaninfo.keys()
+      self.scankeys.sort()
+      # get IF channel IDs
+      self.chan_names = get_channel_IDs(self.scaninfo)
+      self.logger.debug("get_scan_info: channel keys: %s", self.chan_names)
+      return True
+    else:
+      return False
   
   def get_metadata_from_WVSR_logs(self):
     """
@@ -197,9 +209,12 @@ class WVSRmetadataCollector:
     is the value that is returned.  The exception is attenuator data which may
     change during a track.
     
+    This also initializes scaninfo with source names.
+    
     In quite a few cases we simply exec() a statement this is in the line or
     is constructed from parts of the line.  A typical line looks like this:
-    16/237 08:45:15 wvsr2 ATT[2]: att = 15, des_amp = -10, cur_amp = -10.07, max_amp = 0, min_amp = -50
+    16/237 08:45:15 wvsr2 ATT[2]: \
+          att = 15, des_amp = -10, cur_amp = -10.07, max_amp = 0, min_amp = -50
     """
     logfile = open(logname,'r')
     logtext = logfile.read()
@@ -214,6 +229,7 @@ class WVSRmetadataCollector:
     IFS = {}
     CHAN = {}
     ATT = {}
+    self.scaninfo = {}
     # parse the rest of log file
     for line in lines[1:]:
       if re.search("EXPID\\[[12]\\]", line): # experiment ID
@@ -282,6 +298,12 @@ class WVSRmetadataCollector:
         self.logger.debug("parse_WVSR_log: line parts: %s", parts)
         # exclude the colon from the signal source
         exec(parts[3][:-1]+"= '"+str(parts[10][:-1])+"'")
+      if re.search("IFS\\[.\\]:.*CRITICAL", line): # signal source for IF chanl
+        # IF switch inputs, but opposite of convention
+        self.logger.debug("parse_WVSR_log: IFS from line: %s", line)
+        parts = line.split()
+        self.logger.debug("parse_WVSR_log: line parts: %s", parts)
+        exec(parts[3][:-1]+"= '"+str(parts[10][:-4])+parts[13][:-1]+"'")
       if re.search("ATT\\[.\\]:.*cur_amp", line): # attenuator and power
         self.logger.debug("parse_WVSR_log: ATT line parts: %s", parts)
         parts = line.split()
@@ -304,10 +326,15 @@ class WVSRmetadataCollector:
           exec(parts[3][:-1]+"={"+str(UT)+": {}}")
           # this executes something like "ATT[2][1472028315]['att']=15"
           self.logger.debug("parse_WVSR_log: trying %s",
-                            parts[3][:-1]+"["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
+               parts[3][:-1]+"["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
           exec(parts[3][:-1]+"["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
           # now that the dict exists add the power
-          exec(parts[3][:-1]+"["+str(UT)+"]['"+parts[10]+"']"+"="+parts[12].strip(',')) 
+          exec(parts[3][:-1]+"["+str(UT)+"]['"+parts[10]+"']"+"="+parts[12].strip(','))
+      if re.search("Source_ID", line):
+        # new source
+        parts = line.split()
+        scan, source = parts[-1].split(":")
+        self.scaninfo[int(scan)] = {'source': source}
     self.logger.info("parse_WVSR_log: EXPID = %s", EXPID)
     self.logger.info("parse_WVSR_log: RF_TO_IF_LO = %s", RF_TO_IF_LO)
     self.logger.info("parse_WVSR_log: IFS = %s", IFS)
@@ -396,7 +423,7 @@ class WVSRmetadataCollector:
     for log in fftlogs:
       # parse file name
       logname = splitext(basename(log))[0]
-      YR, DOY, scan, subch, projcode  = self.parse_fft_log_name(logname)
+      YR, DOY, dss, scan, subch, projcode  = self.parse_fft_log_name(logname)
       scans.append(scan)
       subchls.append(subch)
     scannums = unique(scans)
@@ -413,12 +440,15 @@ class WVSRmetadataCollector:
       # each IF has the same number of subchannels
       for subch in subchannels:
         # parse the FFT log
-        if projcode:
+        if dss and projcode:
           logname = "%2d-%03d-%03d-s%04d_d%2d_%3s_RCP_LCP.wvsr.log" % \
                   (self.year-2000, self.doy, subch, scan, self.dss, projcode)
-        else:
+        elif dss:
           logname = "%2d-%03d-%03d-s%04d_d%2d_RCP_LCP.wvsr.log" % \
                   (self.year-2000, self.doy, subch, scan, self.dss)
+        else:
+          logname = "%2d-%03d-%03d-s%04d_RCP_LCP.wvsr.log" % \
+                  (self.year-2000, self.doy, subch, scan)
         try:
           logfile = open(self.fftdir+logname)
         except IOError, details:
@@ -436,14 +466,10 @@ class WVSRmetadataCollector:
         for ch in extracted.keys(): # these keys are channels
           self.fft_meta[scan][ch][subch_key] = {} # third level dict on subch
           for key in extracted[ch].keys(): # these keys are variable names
-            #self.logger.debug("get_metadata_from_FFT_logs: ch %d sub %s key '%s'",
-            #                  ch, subch_key, key)
             if key == 'n_samples' or key == 'n_freqs':
-              #self.fft_meta[scan][ch][key] = extracted[ch][key]
               self.fft_meta[scan][key] = extracted[ch][key]
             else:
               self.fft_meta[scan][ch][subch_key][key] = extracted[ch][key]
-              #self.fft_meta[scan][subch_key][key] = extracted[ch][key]
           
   def parse_fft_log_name(self, logname):
     """
@@ -457,6 +483,11 @@ class WVSRmetadataCollector:
     Some of these were later changed to something like::
       16-364-001-s0001_d14_EGG_RCP_LCP.wvsr.log
     This does not affect the year, DOY, channel, scan number
+    
+    This form was also used (e.g. 2016g209)::
+      16-209-001-s0018_RCP_LCP.wvsr.log
+    
+    Returns year, DOY, scan, subch, project code (or None)
     """
     # split on the hyphens
     name_parts = logname.split('-')
@@ -474,16 +505,19 @@ class WVSRmetadataCollector:
     # split the underscore delimited part
     lastparts = name_parts[3].split("_")
     scan = int(lastparts[0][1:]) # removes 's'
-    dss = int(lastparts[1][1:])  # removes 'd'
-    if dss != self.dss:
-      self.logger.error("get_metadata_from_FFT_logs: %s is for wrong DSS",
+    if len(lastparts) == 3:
+      return YR, DOY, None, scan, subch, None
+    elif len(lastparts) > 3:
+      dss = int(lastparts[1][1:])  # removes 'd'
+      if dss != self.dss:
+        self.logger.error("get_metadata_from_FFT_logs: %s is for wrong DSS",
                         logname)
-      return False
+        return False
     if len(lastparts) == 4:
-      return YR, DOY, scan, subch, None
+      return YR, DOY, dss, scan, subch, None
     elif len(lastparts) == 5:
       # project code in log name
-      return YR, DOY, scan, subch, lastparts[2]
+      return YR, DOY, dss, scan, subch, lastparts[2]
       
   def parse_fft_log(self, lines):
     """
@@ -549,3 +583,37 @@ class WVSRmetadataCollector:
       """
       pass
 
+####################################### functions #############################
+
+def find_activity(WVSRsession):
+  """
+  """
+  year = 2000+int(WVSRsession[:2])
+  if WVSRsession[2] == 'c':
+    dss = 43
+  elif WVSRsession[2] == 'g':
+    dss = 14
+  elif WVSRsession[2] == 'm':
+    dss = 63
+  elif WVSRsession[2] == 'a':
+    dss = 34
+  else:
+    dscc = 'unknown'
+  doy = int(WVSRsession[-3:])
+  found = []
+  for activity in get_activity():
+    path = act_proj_path + activity + "/dss"+str(dss) + '/20'+WVSRsession[:2] \
+                         +"/"+WVSRsession[-3:]
+    if os.path.exists(path):
+      found.append(path)
+  return found
+
+def identify_sessions():
+  """
+  """
+  sessions = glob.glob(wvsr_fft_dir+"*")
+  for session in sessions:
+    base = os.path.basename(session)
+    print base, find_activity(base)
+    
+  

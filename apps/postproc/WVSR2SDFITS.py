@@ -24,8 +24,6 @@ import IPython
 IPython.version_info = IPython.release.version.split('.')
 IPython.version_info.append('')
 
-#from pylab import * #!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-
 import astropy.io.fits as pyfits
 import astropy.units as u
 import dateutil
@@ -45,7 +43,7 @@ from scipy.optimize import curve_fit
 
 from Astronomy import calendar_date
 from Astronomy.redshift import V_LSR
-from Automation import get_session_dirs, get_start_time
+from Automation import activity_project, get_session_dirs, get_start_time
 from Automation.NMClogs import NMClogManager,NMC_log_server 
 from Automation.sources import get_all_source_data
 from Automation.tones import tone_chnl_nums
@@ -57,13 +55,11 @@ from Data_Reduction.FITS.DSNFITS import FITSfile
 from Data_Reduction.tipping import airmass
 from DatesTimes import datetime_to_UnixTime
 from local_dirs import sci_proj_path
-#from Data_Reduction.DSN.SAO import parse_filename
 from Math.multigauss import gaussian
 from MonitorControl.BackEnds.DSN.helpers import WVSRmetadataCollector
 from MonitorControl.Configurations.coordinates import DSS
 from MonitorControl.Configurations.DSN_standard import standard_equipment
 from MonitorControl.Configurations.GDSCC.WVSR import station_configuration
-#from MonitorControl.SDFITS import FITSfile
 from support import mkdir_if_needed
 from support.logs import initiate_option_parser, init_logging
 from support.logs import get_loglevel, set_loglevel
@@ -305,7 +301,8 @@ class FITSfile_from_WVSR(FITSfile):
                                                 nrows=numscans*total_num_tones)
       tonetabhdu = pyfits.BinTableHDU(data=toneFITSrec, header=self.tonehead,
                                     name="TONES PCG")
-    
+    else:
+      tonetabhdu = None
     # create a table extension for astronomy data
     FITSrec = pyfits.FITS_rec.from_columns(self.columns,
                                            nrows=numscans*num_subchans)
@@ -445,9 +442,13 @@ class FITSfile_from_WVSR(FITSfile):
                           tabhdu.data[data_row_index]['DATE-OBS']).timetuple())
       subch_tone_idx = 0 # collect tone data from both subchannels
       for subch in subchannels:
-        self.logger.debug(
+        if tonetabhdu:
+          self.logger.debug(
                      "add_data: processing scan %d %s data row %d tone row %d",
                      scan, subch, data_row_index, tone_row_index)
+        else:
+          self.logger.debug("add_data: processing scan %d %s data row %d",
+                            scan, subch, data_row_index)
         sub_idx = subchannels.index(subch)
         tabhdu.data[data_row_index]['SCAN'] = scan   # int
         tabhdu.data[data_row_index]['DATE-OBS'] = \
@@ -489,7 +490,7 @@ class FITSfile_from_WVSR(FITSfile):
             tabhdu.data[data_row_index]['SIG'] = True
           self.logger.debug("add_data: source is %s", 
                             tabhdu.data[data_row_index]['OBJECT'])
-          response = self.logserver[cfg_key].get_azel(startUXtime, endUXtime)
+          response = self.logserver.get_azel(startUXtime, endUXtime)
           self.logger.debug("add_data: response = %s", response)
           if response:
             az,el = response
@@ -523,7 +524,7 @@ class FITSfile_from_WVSR(FITSfile):
         tabhdu.data[data_row_index]['VELOCITY'] = \
                                      self.collector.sources[sourcename]['Vlsr']
         tabhdu.data[data_row_index]['VELDEF'] = veldef
-        weather = self.logserver[cfg_key].get_weather(startUXtime)
+        weather = self.logserver.get_weather(startUXtime)
         self.logger.debug("add_data: weather at %s is %s", startUXtime, weather)
         if weather:
           tabhdu.data[data_row_index]['TAMBIENT'] = weather[0]
@@ -557,7 +558,7 @@ class FITSfile_from_WVSR(FITSfile):
              
         # second and third data axes (coordinates)
         RA, dec = \
-          self.logserver[cfg_key].get_RAdec(startUXtime)
+          self.logserver.get_RAdec(startUXtime)
         self.logger.debug("add_data: apparent RA,dec = %f,%f", RA, dec)
         c = SkyCoord(RA, dec, unit=(u.deg, u.deg),
                      frame=FK5(equinox=Time('J'+str(year), scale='utc')))
@@ -738,6 +739,11 @@ Examples
 """  
   p = initiate_option_parser(__doc__, examples)
   p.usage='WVSR2SDFITS.py [options]'
+  p.add_argument('-a', '--activity',
+               dest = 'activity',
+               type = str,
+               default = None,
+               help = "Project code")
   p.add_argument('--date',
                dest = 'date',
                type = str,
@@ -748,11 +754,11 @@ Examples
                type = int,
                default = 14,
                help = 'DSN station number')
-  p.add_argument('-p', '--project',
-               dest = 'project',
-               type = str,
-               default = 'AUTO_EGG',
-               help = "Project code")
+  p.add_argument('-t', '--no_tones',
+               dest = 'tones',
+               default = True,
+               action = 'store_false',
+               help = 'do not process phase cal tones')
   args = p.parse_args(sys.argv[1:])
   
   mylogger = logging.getLogger()
@@ -764,15 +770,14 @@ Examples
                  
   mylogger.critical(" WVSR2SDFITS started")
   mylogger.debug("WVSR2SDITS args: %s", args)
-  if args.project[:4] != 'AUTO':
-    raise RuntimeError("project name must start with AUTO")
   yearstr, doystr = args.date.split("/")
   year = int(yearstr)
   doy = int(doystr)
+  project = activity_project(args.activity)
   
   # note that this does not handle recording sessions with multiple antennas
-  obsdir, realdir, project_dir, datadir, wvsrdir, fftdir = \
-                            get_session_dirs(args.project, args.dss, year, doy)
+  obsdir, realdir, activity_dir, project_dir, datadir, wvsrdir, fftdir = \
+                           get_session_dirs(args.activity, args.dss, year, doy)
 
   # get data for all the sources and verifiers used by the project
   sourcedata = get_all_source_data(project_dir)
@@ -781,24 +786,24 @@ Examples
   timesfiles = glob.glob(obsdir+"times-*")
   mylogger.debug("WVSR2SDITS found %s", timesfiles)
   if len(timesfiles) < 1:
-    raise RuntimeError("WVSR2SDITS: no times file is %s" % obsdir)
+    raise RuntimeError("WVSR2SDITS: no times file in %s" % obsdir)
   elif len(timesfiles) > 1:
     raise RuntimeError("WVSR2SDITS: can only handle one timesfile; %s has %d" \
-                       % len(timesfiles))
+                       % (obsdir, len(timesfiles)))
   starttime = get_start_time(timesfiles[0])
 
   # get a manager for the NMC log for this session.
-  NMClogmanager = NMClogManager(project=args.project, station=dss,
-                                year=year, DOY=doy, starttime=starttime,
+  NMClogmanager = NMClogManager(station=args.dss,
+                                year=year, DOY=doy, time=starttime,
                                 use_portal=False)
   mylogger.debug("WVSR2SDITS NMC metadata available: %s",
-                 NMClogmanager[wvsr].metadata.keys())
+                 NMClogmanager.metadata.keys())
   # the log server provides timed information from the NMC log
-  NMClogserver = NMC_log_server(args.project, dss, year, doy)
+  NMClogserver = NMC_log_server(args.dss, year, doy)
   
   # get a metadata manager for the WVSR log for this session
-  collector = WVSRmetadataCollector(args.project, args.dss,
-                                    year, doy, starttime, NMClogserver)
+  collector = WVSRmetadataCollector(args.activity, args.dss,
+                                    year, doy, starttime)
   collector.sources = sourcedata
   mylogger.debug("__init__: equipment: %s", collector.equip)
   
@@ -829,8 +834,8 @@ Examples
             rxband[key] = band
         else:
           raise RuntimeError("WVSR2SDFITS can only handle one antenna")
-      config[key] = station_configuration(None, args.project, dss, year, doy,
-                                          starttime, rxband[key])
+      config[key] = station_configuration(None, project, dss, year, doy,
+                                   starttime, rxband[key], collector=collector)
     else:
       raise RuntimeError("single IF case not yet coded")
   # Now we can start a FITSfile
@@ -850,7 +855,8 @@ Examples
       wvsr = cfg_key[:-2]
     else:
       wvsr =  cfg_key
-    ff.make_WVSR_table(config, collector, NMClogserver, cfg_key)
+    ff.make_WVSR_table(config, collector, NMClogserver, cfg_key,
+                       tones=args.tones)
   
   hdulist = pyfits.HDUList([ff.prihdu]+ff.tables.values())
   parts = realdir.split('/')
