@@ -4,6 +4,7 @@ import glob
 import logging
 import re
 
+from datetime import datetime
 from os.path import basename, splitext
 
 from Automation import get_session_dirs
@@ -38,7 +39,7 @@ class WVSRmetadataCollector:
     wvsrlogs     - list of log file names
     year         - year of observation
   """
-  def __init__(self, project, dss, year, doy, time):
+  def __init__(self, activity, dss, year, doy, time):
     """
     initiate a WVSR configuration description collector
     
@@ -58,7 +59,7 @@ class WVSRmetadataCollector:
     @param time : start time without colon: HHMM
     @type  time : str
     """
-    self.project = project
+    self.activity = activity
     self.dss = dss
     self.year = year
     self.doy = doy
@@ -66,19 +67,20 @@ class WVSRmetadataCollector:
     self.logger = logging.getLogger(logger.name+".WVSRmetadataCollector")
     self.logger.info("__init__: WVSRmetadataCollector initializing")
     # get all the directories involved
-    auto_obsdir, self.real_obsdir, self.project_dir, self.datadir, \
-        self.wvsrdir, self.fftdir = get_session_dirs( project, dss, year, doy)
+    auto_obsdir, self.real_obsdir, self.activity_dir, self.project_dir, \
+        self.datadir, self.wvsrdir, self.fftdir = \
+        get_session_dirs( activity, dss, year, doy)
     if self.wvsrdir:
       pass
     else:
       self.logger.error("__init__: no WVSR data directory")
       raise RuntimeError("no WVSR data directory")
     # get the high-level metadata
-    #get_all_source_data(self.project_dir)
-    if self.get_scan_info():
-      pass
-    else:
-      raise RuntimeError("no scan files found")
+    #get_all_source_data(self.activity_dir)
+    #if self.get_scan_info():
+    #  pass
+    #else:
+    #  raise RuntimeError("no scan files found")
     self.get_WVSR_names()
     self.get_metadata_from_WVSR_logs()
     self.equip = {}
@@ -90,6 +92,7 @@ class WVSRmetadataCollector:
         self.logger.debug('__init__: %s IF %s config: %s', wvsr, IF, self.wvsr_cfg[wvsr][IF])
         band = self.wvsr_cfg[wvsr][IF]['IF_source'].split('_')[1]
         self.equip[wvsr][IF] = standard_equipment(dss, band)
+        self.get_metadata_from_WVSR_scripts(band)
     # get the parameters for each FFT configuration
     self.get_metadata_from_FFT_logs()
   
@@ -392,6 +395,7 @@ class WVSRmetadataCollector:
     fftlogs = glob.glob(self.fftdir+"*.log")
     fftlogs.sort()
     scans = []
+    self.scaninfo = {}
     subchls = []
     # get the scan numbers
     for log in fftlogs:
@@ -408,11 +412,13 @@ class WVSRmetadataCollector:
     self.fft_meta = {}
     for scan in scannums:
       self.fft_meta[scan] = {} # first level dict on scan
+      self.scaninfo[scan] = {}
       # create a dict for each IF
       for channel in self.wvsr_cfg[self.wvsrnames.keys()[0]]["channels"]:
         self.fft_meta[scan][channel] = {} # second level dict on IF channel
       # each IF has the same number of subchannels
       for subch in subchannels:
+        channelID = 'chan_id '+str(subch)
         # parse the FFT log
         if projcode:
           logname = "%2d-%03d-%03d-s%04d_d%2d_%3s_RCP_LCP.wvsr.log" % \
@@ -426,6 +432,8 @@ class WVSRmetadataCollector:
           self.logger.debug("get_metadata_from_FFT_logs: no %s",
                             self.fftdir+logname)
           break
+        fftfile = logname.replace('.log','.fft')
+        self.scaninfo[scan][channelID] = fftfile
         lines = logfile.readlines()
         logfile.close()
         subch_key = "chan_id "+str(subch)
@@ -433,6 +441,11 @@ class WVSRmetadataCollector:
         extracted = self.parse_fft_log(lines)
         self.logger.debug("get_metadata_from_FFT_logs: extracted %s",
                           extracted)
+        self.scaninfo['start'] = datetime.strptime(
+                                                 extracted[subch]['first rec'],
+                                                 "%Y %j:%H:%M:%S.%f")
+        self.scaninfo['end'] = datetime.strptime(extracted[subch]['last rec'],
+                                                   "%Y %j:%H:%M:%S.%f")
         # move to metadata structure
         for ch in extracted.keys(): # these keys are channels
           self.fft_meta[scan][ch][subch_key] = {} # third level dict on subch
@@ -463,12 +476,12 @@ class WVSRmetadataCollector:
     name_parts = logname.split('-')
     YR = int(name_parts[0])
     if 2000+YR != self.year:
-      self.logger.error("get_metadata_from_FFT_logs: %s is for wrong year",
+      self.logger.error("parse_fft_log_name: %s is for wrong year",
                         logname)
       return False
     DOY = int(name_parts[1])
     if DOY != self.doy:
-      self.logger.error("get_metadata_from_FFT_logs: %s is for wrong DOY",
+      self.logger.error("parse_fft_log_name: %s is for wrong DOY",
                         logname)
       return False
     subch = int(name_parts[2])
@@ -477,7 +490,7 @@ class WVSRmetadataCollector:
     scan = int(lastparts[0][1:]) # removes 's'
     dss = int(lastparts[1][1:])  # removes 'd'
     if dss != self.dss:
-      self.logger.error("get_metadata_from_FFT_logs: %s is for wrong DSS",
+      self.logger.error("parse_fft_log_name: %s is for wrong DSS",
                         logname)
       return False
     if len(lastparts) == 4:
@@ -532,7 +545,7 @@ class WVSRmetadataCollector:
         if re.search("First", line):
           found[channel]["first rec"] = ' '.join(parts[2:])
         if re.search("Last", line):
-          found[channel]["last_rec"] = ' '.join(parts[2:])
+          found[channel]["last rec"] = ' '.join(parts[2:])
         if line[:4] == "nrec":
           found[channel]["n_recs"] = int(parts[2])
           found[channel]["n_secs"] = int(parts[5])
@@ -544,9 +557,21 @@ class WVSRmetadataCollector:
           found[channel]["n_freqs"] = int(parts[5])
           break
     return found
-    
-    def make_backend(self):
-      """
-      """
-      pass
+
+  def get_metadata_from_WVSR_scripts(self, band, pol="RCP"):
+    """
+    @param band : S, X or K
+    @type  band : str
+      
+    @param pol : RCP or LCP (or R or L)
+    @type  pol : str
+    """
+    if len(pol) == 1:
+      pol += "CP"
+    template = self.activity_dir+"*"+band+pol+".scr"
+    self.logger.debug("get_metadata_from_WVSR_scripts: template ' %s",
+                      template)
+    scripts = glob.glob(template)
+    self.logger.debug("get_metadata_from_WVSR_scripts: found %s", scripts)
+      
 
