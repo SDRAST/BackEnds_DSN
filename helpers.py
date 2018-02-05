@@ -7,7 +7,7 @@ import re
 from datetime import datetime
 from os.path import basename, splitext
 
-from Automation import get_session_dirs
+from Automation import activity_project, get_session_dirs
 from Automation.sources import get_all_source_data
 from Automation.WVSR import parse_scan_files
 from Data_Reduction.DSN.WVSR.SpecData import get_channel_IDs
@@ -38,6 +38,15 @@ class WVSRmetadataCollector:
     wvsrdir      - location of WVSR files
     wvsrlogs     - list of log file names
     year         - year of observation
+    
+  'scaninfo' example::
+    In [12]: collector.scaninfo[6]
+    Out[12]: 
+    {'subch 1': '16-237-001-s0006_d14_RCP_LCP.wvsr.fft',
+     'subch 2': '16-237-002-s0006_d14_RCP_LCP.wvsr.fft',
+     'end': datetime.datetime(2016, 8, 24, 9, 42),
+     'source': 'w5w-fregg51-ref',
+     'start': datetime.datetime(2016, 8, 24, 9, 40, 30)}
   """
   def __init__(self, activity, dss, year, doy, time):
     """
@@ -60,6 +69,7 @@ class WVSRmetadataCollector:
     @type  time : str
     """
     self.activity = activity
+    self.project = activity_project(activity)
     self.dss = dss
     self.year = year
     self.doy = doy
@@ -76,50 +86,25 @@ class WVSRmetadataCollector:
       self.logger.error("__init__: no WVSR data directory")
       raise RuntimeError("no WVSR data directory")
     # get the high-level metadata
-    #get_all_source_data(self.activity_dir)
-    #if self.get_scan_info():
-    #  pass
-    #else:
-    #  raise RuntimeError("no scan files found")
     self.get_WVSR_names()
     self.get_metadata_from_WVSR_logs()
-    self.equip = {}
+    # get the parameters for each FFT configuration
+    self.scaninfo = {}
+    self.get_metadata_from_FFT_logs()
     # specify station equipment for each IF
+    self.equip = {}
     for wvsr in self.wvsrnames:
       self.equip[wvsr] = {}
       self.logger.debug('__init__: %s config: %s', wvsr, self.wvsr_cfg[wvsr])
       for IF in self.wvsr_cfg[wvsr]['channels']:
-        self.logger.debug('__init__: %s IF %s config: %s', wvsr, IF, self.wvsr_cfg[wvsr][IF])
+        self.logger.debug('__init__: %s IF %s config: %s',
+                          wvsr, IF, self.wvsr_cfg[wvsr][IF])
         band = self.wvsr_cfg[wvsr][IF]['IF_source'].split('_')[1]
         self.equip[wvsr][IF] = standard_equipment(dss, band)
-        self.get_metadata_from_WVSR_scripts(band)
-    # get the parameters for each FFT configuration
-    self.get_metadata_from_FFT_logs()
-  
-  def get_scan_info(self):
-    """
-    get the metadata for channels and scans recorded
+        # add source name to 'scaninfo'
+        self.get_metadata_from_WVSR_scripts(band=band,
+                                            pol=self.wvsr_cfg[wvsr][IF]['pol'])
     
-    Example::
-      In [12]: collector.scaninfo[6]
-      Out[12]: 
-      {'chan_id 1': '16-237-001-s0006_d14_RCP_LCP.wvsr.fft',
-       'chan_id 2': '16-237-002-s0006_d14_RCP_LCP.wvsr.fft',
-       'end': datetime.datetime(2016, 8, 24, 9, 42),
-       'source': 'w5w-fregg51-ref',
-       'start': datetime.datetime(2016, 8, 24, 9, 40, 30)}
-    """
-    self.scaninfo = parse_scan_files(self.real_obsdir)
-    if self.scaninfo:
-      self.scankeys = self.scaninfo.keys()
-      self.scankeys.sort()
-      # get IF channel IDs
-      self.chan_names = get_channel_IDs(self.scaninfo)
-      self.logger.debug("get_scan_info: channel keys: %s", self.chan_names)
-      return True
-    else:
-      return False
-  
   def get_WVSR_names(self):
     """
     find the recorders used
@@ -362,22 +347,22 @@ class WVSRmetadataCollector:
       Out[2]: 
       {1: {'chan_id 1': {'datafile':  '/data2/16g237/16-237-001-s0003_d14_RCP.wvsr',
                          'first rec': '2016 237:09:34:31.000',
-                         'last_rec':  '2016 237:09:35:59.000',
+                         'last rec':  '2016 237:09:35:59.000',
                          'n_recs': 90,
                          'n_secs': 90},
            'chan_id 2': {'datafile':  '/data2/16g237/16-237-002-s0003_d14_RCP.wvsr',
                          'first rec': '2016 237:09:34:31.000',
-                         'last_rec':  '2016 237:09:35:59.000',
+                         'last rec':  '2016 237:09:35:59.000',
                          'n_recs': 90,
                          'n_secs': 90}},
        2: {'chan_id 1': {'datafile':  '/data2/16g237/16-237-001-s0003_d14_LCP.wvsr',
                          'first rec': '2016 237:09:34:31.000',
-                         'last_rec':  '2016 237:09:35:59.000',
+                         'last rec':  '2016 237:09:35:59.000',
                          'n_recs': 90,
                          'n_secs': 90},
            'chan_id 2': {'datafile':  '/data2/16g237/16-237-002-s0003_d14_LCP.wvsr',
                          'first rec': '2016 237:09:34:31.000',
-                         'last_rec':  '2016 237:09:35:59.000',
+                         'last rec':  '2016 237:09:35:59.000',
                          'n_recs': 90,
                          'n_secs': 90},
            'n_freqs':   131072,
@@ -395,7 +380,6 @@ class WVSRmetadataCollector:
     fftlogs = glob.glob(self.fftdir+"*.log")
     fftlogs.sort()
     scans = []
-    self.scaninfo = {}
     subchls = []
     # get the scan numbers
     for log in fftlogs:
@@ -418,7 +402,7 @@ class WVSRmetadataCollector:
         self.fft_meta[scan][channel] = {} # second level dict on IF channel
       # each IF has the same number of subchannels
       for subch in subchannels:
-        channelID = 'chan_id '+str(subch)
+        channelID = 'subch '+str(subch)
         # parse the FFT log
         if projcode:
           logname = "%2d-%03d-%03d-s%04d_d%2d_%3s_RCP_LCP.wvsr.log" % \
@@ -441,10 +425,10 @@ class WVSRmetadataCollector:
         extracted = self.parse_fft_log(lines)
         self.logger.debug("get_metadata_from_FFT_logs: extracted %s",
                           extracted)
-        self.scaninfo['start'] = datetime.strptime(
+        self.scaninfo[scan]['start'] = datetime.strptime(
                                                  extracted[subch]['first rec'],
                                                  "%Y %j:%H:%M:%S.%f")
-        self.scaninfo['end'] = datetime.strptime(extracted[subch]['last rec'],
+        self.scaninfo[scan]['end'] = datetime.strptime(extracted[subch]['last rec'],
                                                    "%Y %j:%H:%M:%S.%f")
         # move to metadata structure
         for ch in extracted.keys(): # these keys are channels
@@ -558,7 +542,7 @@ class WVSRmetadataCollector:
           break
     return found
 
-  def get_metadata_from_WVSR_scripts(self, band, pol="RCP"):
+  def get_metadata_from_WVSR_scripts(self, band='X', pol="RCP"):
     """
     @param band : S, X or K
     @type  band : str
@@ -572,6 +556,23 @@ class WVSRmetadataCollector:
     self.logger.debug("get_metadata_from_WVSR_scripts: template ' %s",
                       template)
     scripts = glob.glob(template)
-    self.logger.debug("get_metadata_from_WVSR_scripts: found %s", scripts)
+    scripts.sort()
+    script = scripts[-1] # use the last version of the script
+    self.logger.debug("get_metadata_from_WVSR_script: script is %s", script)
+    scriptfile = open(script, 'r')
+    lines = scriptfile.readlines()
+    scriptfile.close()
+    # get source for each scan
+    for line in lines:
+      line = line.strip()
+      if line[:5] == 'srcid':
+        self.logger.debug("get_metadata_from_WVSR_scripts: processing '%s'",
+                          line)
+        parts =  line.split()
+        scanID, source = parts[1].split(':')
+        scan = int(scanID)
+        if self.scaninfo.has_key(scan):
+          self.scaninfo[scan]['source'] = source
+    
       
 

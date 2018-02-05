@@ -27,6 +27,7 @@ IPython.version_info.append('')
 import astropy.io.fits as pyfits
 import astropy.units as u
 import dateutil
+import datetime
 import glob
 import logging
 import math
@@ -729,6 +730,90 @@ class FITSfile_from_WVSR(FITSfile):
         # end subch loop
       # end scan loop
     return tabhdu, tonetabhdu
+  
+  def get_dwell_times(self, activity_dir):
+    """
+    returns the times when the antenna is tracking a positionin the sky
+    
+    That is, it is not slewing.
+    
+    @param activity_dir : where the .oe file is located
+    @type  activity_dir : str
+    """
+    # get the .oe file contents
+    files = glob.glob(activity_dir+"*.oe")
+    files.sort()
+    if files:
+      fname = files[-1]
+      mylogger.debug("check_recording_time: %s", basename(fname))
+      f = open(fname)
+      lines = f.readlines()
+      f.close()
+    else:
+      print "No .oe file in", activity_dir
+      raise RuntimeError("no .oe files")
+    # parse the .oe file contents
+    self.oe_source = {}
+    self.oe_start = {}
+    self.oe_end = {}
+    for line in lines[8:]:
+      parts = line.strip().split()
+      scan = int(parts[0])
+      mylogger.debug("scan %d line has %d parts", scan, len(parts))
+      if len(parts) == 8:
+        self.oe_source[scan] = parts[1]
+        self.oe_start[scan] = parts[5]
+        self.oe_end[scan] = parts[6]
+      elif len(parts) == 9:
+        # source name has space
+        self.oe_source[scan] = "_".join(parts[1:3])
+        self.oe_start[scan] = parts[6]
+        self.oe_end[scan] = parts[6]
+      else:
+        raise RuntimeError("OE file scan %d line has %d parts",
+                           scan, len(parts))
+    return True
+  
+  def check_recording_times(self, activity_dir):
+    """
+    check that recording times and antenna dwell times agree
+    
+    @param activity_dir : where the .oe file is located
+    @type  activity_dir : str
+    """
+    self.get_dwell_times(activity_dir)
+    scans = self.collector.scaninfo.keys()
+    scans.sort()
+    tol = datetime.timedelta(seconds=6)
+    tablekeys = self.tables.keys()
+    tablekeys.sort()
+    # different tables have different number of rows but the same scans
+    for key in tablekeys:
+      table = self.tables[key]
+      for scan in scans:
+        rows = numpy.where(table.data['SCAN'] == scan)[0] # where returns tuple
+        # there are two rows for each cycle
+        obsdate = table.data['DATE-OBS'][rows[0]]
+        # these are datetime objects
+        on_start = datetime.datetime.strptime(obsdate+' '+self.oe_start[scan],
+                                              "%Y/%m/%d %H:%M:%S")
+        on_end   = datetime.datetime.strptime(obsdate+' '+self.oe_end[scan],
+                                              "%Y/%m/%d %H:%M:%S")
+        rec_start = self.collector.scaninfo[scan]['start']
+        rec_end   = self.collector.scaninfo[scan]['end']
+        if rec_start >= on_start-tol and rec_end <= on_end+tol:
+          # scan accepted
+          self.logger.info(
+                         "check_recording_times: scan %d times are compatible",
+                         scan)
+        else:
+          # insufficient time overlap
+          self.logger.warning(
+                           "check_recording_times: scan %d times incompatible",
+                           scan)
+          # set CYCLE to 0 in each table
+          table.data['CYCLE'][rows] = 0
+    return True
     
 if __name__ == "__main__":
   examples = """
@@ -774,7 +859,6 @@ Examples
   year = int(yearstr)
   doy = int(doystr)
   project = activity_project(args.activity)
-  
   # note that this does not handle recording sessions with multiple antennas
   obsdir, realdir, activity_dir, project_dir, datadir, wvsrdir, fftdir = \
                            get_session_dirs(args.activity, args.dss, year, doy)
