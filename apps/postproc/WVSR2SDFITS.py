@@ -300,22 +300,43 @@ class FITSfile_from_WVSR(FITSfile):
       # create a table extension for tone data
       toneFITSrec = pyfits.FITS_rec.from_columns(self.tonecols,
                                                 nrows=numscans*total_num_tones)
-      tonetabhdu = pyfits.BinTableHDU(data=toneFITSrec, header=self.tonehead,
-                                    name="TONES PCG")
+      #tonetabhdu = pyfits.BinTableHDU(data=toneFITSrec, header=self.tonehead,
+      #                              name="TONES PCG")
     else:
       tonetabhdu = None
-    # create a table extension for astronomy data
+    # create a structured numpy record for the data
     FITSrec = pyfits.FITS_rec.from_columns(self.columns,
                                            nrows=numscans*num_subchans)
-    tabhdu =  pyfits.BinTableHDU(data=FITSrec, header=self.exthead,
-                                      name="SINGLE DISH")
+    #tabhdu =  pyfits.BinTableHDU(data=FITSrec, header=self.exthead,
+    #                                  name="SINGLE DISH")
+    # now add the data
     if tones:
       # fill in the data and tone tables rows
-      tabhdu, tonetabhdu = self.add_data(tabhdu, tonetabhdu, key)
-      self.tables[key+"-pcg"] = tonetabhdu
+      #tabhdu, tonetabhdu = self.add_data(tabhdu, tonetabhdu, key)
+      FITSrec, toneFITSrec = self.add_data(FITSrec, toneFITSrec, key)
+      #self.tables[key+"-pcg"] = tonetabhdu
     else:
-      tabhdu, dummy = self.add_data(tabhdu, None, key)
+      #tabhdu, dummy = self.add_data(tabhdu, None, key)
+      FITSrec, toneFITSrec = self.add_data(FITSrec, None, key)
+    #self.tables[key] = tabhdu
+    # remove unused rows from the tables 
+    nrows = len(FITSrec['SCAN'].nonzero()[0])
+    newFITSrec = pyfits.FITS_rec.from_columns(self.columns, nrows=nrows)
+    for row in range(nrows):
+      newFITSrec[row] = FITSrec[row]
+    tabhdu =  pyfits.BinTableHDU(data=newFITSrec, header=self.exthead,
+                                      name="SINGLE DISH")
     self.tables[key] = tabhdu
+    if tones:
+      ntonerows = len(toneFITSrec['SCAN'].nonzero()[0])
+      newtonerec = pyfits.FITS_rec.from_columns(self.tonecols, nrows=ntonerows)
+      for row in range(ntonerows):
+        newtonerec[row] = toneFITSrec[row]
+      tonetabhdu = pyfits.BinTableHDU(data=newtonerec, header=self.tonehead,
+                                      name="TONES PCG")
+      self.tables[key+"-pcg"] = tonetabhdu
+      
+    
   
   def make_tone_header(self):
     """
@@ -384,7 +405,7 @@ class FITSfile_from_WVSR(FITSfile):
     subchannel = BE.IF[1].subchannel['chan_id 1'] # any one will do
     self.exthead['freqres'] =  float(subchannel['bandwidth'])/subchannel['nchans']
   
-  def add_data(self, tabhdu, tonetabhdu, cfg_key, numrecs=1):
+  def add_data(self, FITSrec, toneFITSrec, cfg_key, numrecs=1):
     """
     Takes data header from WVSR post-processed FFT files and puts them into the
     SDFITS table
@@ -426,7 +447,7 @@ class FITSfile_from_WVSR(FITSfile):
 
     self.IFpower = {}
     data_row_index = 0
-    if tonetabhdu:
+    if toneFITSrec != None:
       tone_row_index = 0
     for scan in scans:    # self.collector.scankeys:
       # dataset header is keyed on the index of the scan in the set of scans
@@ -440,10 +461,10 @@ class FITSfile_from_WVSR(FITSfile):
       year, month, day = calendar_date(self.collector.year, self.collector.doy)
       # UNIX time at midnight
       midnight = time.mktime(dateutil.parser.parse(
-                          tabhdu.data[data_row_index]['DATE-OBS']).timetuple())
+                          FITSrec[data_row_index]['DATE-OBS']).timetuple())
       subch_tone_idx = 0 # collect tone data from both subchannels
       for subch in subchannels:
-        if tonetabhdu:
+        if toneFITSrec != None:
           self.logger.debug(
                      "add_data: processing scan %d %s data row %d tone row %d",
                      scan, subch, data_row_index, tone_row_index)
@@ -451,13 +472,13 @@ class FITSfile_from_WVSR(FITSfile):
           self.logger.debug("add_data: processing scan %d %s data row %d",
                             scan, subch, data_row_index)
         sub_idx = subchannels.index(subch)
-        tabhdu.data[data_row_index]['SCAN'] = scan   # int
-        tabhdu.data[data_row_index]['DATE-OBS'] = \
+        FITSrec[data_row_index]['SCAN'] = scan   # int
+        FITSrec[data_row_index]['DATE-OBS'] = \
                                            "%4d/%02d/%02d" % (year, month, day)
         # each subchannel has its own cycle
-        tabhdu.data[data_row_index]['CYCLE'] = sub_idx+1
+        FITSrec[data_row_index]['CYCLE'] = sub_idx+1
         self.logger.debug("add_data: CYCLE = %d",
-                          tabhdu.data[data_row_index]['CYCLE'])
+                          FITSrec[data_row_index]['CYCLE'])
         try:
           datafile = self.collector.scaninfo[scan]['subch '+str(sub_idx+1)]
         except KeyError, details:
@@ -472,37 +493,45 @@ class FITSfile_from_WVSR(FITSfile):
           # ('freq', 'IF1-ps', 'IF2-ps', 'IF1-phase', 'IF2-phase',
           #   'I',     'Q',      'U',      'V',           'P',
           #  'count', 'index')
-          starttime = self.collector.scaninfo[scan]['start'] # datetime.datetime
+          if self.collector.scaninfo[scan] == {}:
+            # skip this scan
+            self.logger.warning("add_data: no scan info for %d", scan)
+            continue
+          try:
+            starttime = self.collector.scaninfo[scan]['start']
+          except KeyError:
+            # incomplete scan info
+            continue
           endtime = self.collector.scaninfo[scan]['end']
           self.logger.debug("add_data: for scan %d %s between %s and %s",
                             scan, subch,starttime,endtime)
           startUXtime = datetime_to_UnixTime(starttime)
           endUXtime = datetime_to_UnixTime(endtime)
-          tabhdu.data[data_row_index]['UNIXtime'] = startUXtime
-          tabhdu.data[data_row_index]['TIME'] = \
-                               tabhdu.data[data_row_index]['UNIXtime']-midnight
+          FITSrec[data_row_index]['UNIXtime'] = startUXtime
+          FITSrec[data_row_index]['TIME'] = \
+                               FITSrec[data_row_index]['UNIXtime']-midnight
           if self.collector.scaninfo[scan]['source'][-4:] == "-ref":
-            tabhdu.data[data_row_index]['OBJECT'] = \
+            FITSrec[data_row_index]['OBJECT'] = \
                                    self.collector.scaninfo[scan]['source'][:-4]
-            tabhdu.data[data_row_index]['SIG'] = False
+            FITSrec[data_row_index]['SIG'] = False
           else:
-            tabhdu.data[data_row_index]['OBJECT'] = \
+            FITSrec[data_row_index]['OBJECT'] = \
                                         self.collector.scaninfo[scan]['source']
-            tabhdu.data[data_row_index]['SIG'] = True
+            FITSrec[data_row_index]['SIG'] = True
           self.logger.debug("add_data: source is %s", 
-                            tabhdu.data[data_row_index]['OBJECT'])
+                            FITSrec[data_row_index]['OBJECT'])
           response = self.logserver.get_azel(startUXtime, endUXtime)
           self.logger.debug("add_data: response = %s", response)
           if response:
             az,el = response
-            tabhdu.data[data_row_index]['AZIMUTH'] = az
-            tabhdu.data[data_row_index]['ELEVATIO'] = el
+            FITSrec[data_row_index]['AZIMUTH'] = az
+            FITSrec[data_row_index]['ELEVATIO'] = el
           else:
-            tabhdu.data[data_row_index]['AZIMUTH'] = numpy.nan
-            tabhdu.data[data_row_index]['ELEVATIO'] = numpy.nan
-          tabhdu.data[data_row_index]['OBSMODE'] = obsmode
+            FITSrec[data_row_index]['AZIMUTH'] = numpy.nan
+            FITSrec[data_row_index]['ELEVATIO'] = numpy.nan
+          FITSrec[data_row_index]['OBSMODE'] = obsmode
           # same exposure for all channels
-          tabhdu.data[data_row_index]['EXPOSURE'] = thisdata[0]['count']
+          FITSrec[data_row_index]['EXPOSURE'] = thisdata[0]['count']
         else:
           # bad data file
           # this is probably the end of the recording
@@ -511,37 +540,37 @@ class FITSfile_from_WVSR(FITSfile):
             scan, subch)
           continue
         # same frequency and bandwidth for both IFs
-        tabhdu.data[data_row_index]['BANDWIDT'] = \
+        FITSrec[data_row_index]['BANDWIDT'] = \
                   self.collector.wvsr_cfg[cfg_key][1]['chan_id 1']['bandwidth']
         obsfreq = self.collector.wvsr_cfg[cfg_key][1]['rf_to_if_lo']*1e6 \
                            + self.collector.wvsr_cfg[cfg_key][1][subch]['sfro']
-        tabhdu.data[data_row_index]['OBSFREQ'] = obsfreq
-        tabhdu.data[data_row_index]['RESTFREQ'] = obsfreq # is this always true?
+        FITSrec[data_row_index]['OBSFREQ'] = obsfreq
+        FITSrec[data_row_index]['RESTFREQ'] = obsfreq # is this always true?
         self.logger.debug("add_data: OBJECT is '%s'",
-                          tabhdu.data[data_row_index]['OBJECT'])
-        sourcename = tabhdu.data[data_row_index]['OBJECT'].replace('_',' ')
+                          FITSrec[data_row_index]['OBJECT'])
+        sourcename = FITSrec[data_row_index]['OBJECT'].replace('_',' ')
         self.logger.debug("add_data: OBJECT is '%s'",
-                          tabhdu.data[data_row_index]['OBJECT'])
-        tabhdu.data[data_row_index]['VELOCITY'] = \
+                          FITSrec[data_row_index]['OBJECT'])
+        FITSrec[data_row_index]['VELOCITY'] = \
                                      self.collector.sources[sourcename]['Vlsr']
-        tabhdu.data[data_row_index]['VELDEF'] = veldef
+        FITSrec[data_row_index]['VELDEF'] = veldef
         weather = self.logserver.get_weather(startUXtime)
         self.logger.debug("add_data: weather at %s is %s", startUXtime, weather)
         if weather:
-          tabhdu.data[data_row_index]['TAMBIENT'] = weather[0]
-          tabhdu.data[data_row_index]['PRESSURE'] = weather[1]
-          tabhdu.data[data_row_index]['HUMIDITY'] = weather[2]
-          tabhdu.data[data_row_index]['WINDSPEE'] = weather[3]
-          tabhdu.data[data_row_index]['WINDDIRE'] = weather[4]
+          FITSrec[data_row_index]['TAMBIENT'] = weather[0]
+          FITSrec[data_row_index]['PRESSURE'] = weather[1]
+          FITSrec[data_row_index]['HUMIDITY'] = weather[2]
+          FITSrec[data_row_index]['WINDSPEE'] = weather[3]
+          FITSrec[data_row_index]['WINDDIRE'] = weather[4]
         else:
           self.logger.debug("add_data: weather not available for %f", startUXtime)
-          tabhdu.data[data_row_index]['TAMBIENT'] = numpy.nan
-          tabhdu.data[data_row_index]['PRESSURE'] = numpy.nan
-          tabhdu.data[data_row_index]['HUMIDITY'] = numpy.nan
-          tabhdu.data[data_row_index]['WINDSPEE'] = numpy.nan
-          tabhdu.data[data_row_index]['WINDDIRE'] = numpy.nan
+          FITSrec[data_row_index]['TAMBIENT'] = numpy.nan
+          FITSrec[data_row_index]['PRESSURE'] = numpy.nan
+          FITSrec[data_row_index]['HUMIDITY'] = numpy.nan
+          FITSrec[data_row_index]['WINDSPEE'] = numpy.nan
+          FITSrec[data_row_index]['WINDDIRE'] = numpy.nan
         
-        datacubeshape = tabhdu.data[data_row_index]['DATA'].shape
+        datacubeshape = FITSrec[data_row_index]['DATA'].shape
         # the frequency axis is first in FITS/FORTRAN order and last (of four)
         # in PYTHON/C order
         num_Stokes_chan = datacubeshape[3]
@@ -549,13 +578,13 @@ class FITSfile_from_WVSR(FITSfile):
         # the chain
         # GBT SDFITS wants SIDEBAND
         if rx['IFmode'] == 'U':
-          tabhdu.data[data_row_index]['SIDEBAND'] = +1
+          FITSrec[data_row_index]['SIDEBAND'] = +1
         elif rx['IFmode'] == 'L':
-          tabhdu.data[data_row_index]['SIDEBAND'] = -1
+          FITSrec[data_row_index]['SIDEBAND'] = -1
         else:
           self.logger.error("add_data: IF mode %s is invalid; default to USB",
                             rx['IFmode'])
-          tabhdu.data[data_row_index]['SIDEBAND'] = +1
+          FITSrec[data_row_index]['SIDEBAND'] = +1
              
         # second and third data axes (coordinates)
         RA, dec = \
@@ -565,26 +594,26 @@ class FITSfile_from_WVSR(FITSfile):
                      frame=FK5(equinox=Time('J'+str(year), scale='utc')))
         c2000 = c.transform_to(fk5_2000)
         self.logger.debug("add_data: RA,dec = %f,%f", c.ra.hour, c.dec.deg)
-        tabhdu.data[data_row_index]['CRVAL2'] = c2000.ra.hour # hours
-        tabhdu.data[data_row_index]['CRVAL3'] = c2000.dec.deg    # deg
-        tabhdu.data[data_row_index]['EQUINOX'] = 2000
+        FITSrec[data_row_index]['CRVAL2'] = c2000.ra.hour # hours
+        FITSrec[data_row_index]['CRVAL3'] = c2000.dec.deg    # deg
+        FITSrec[data_row_index]['EQUINOX'] = 2000
         # get the radial velocity of the LSR
-        tabhdu.data[data_row_index]['VFRAME'] = \
+        FITSrec[data_row_index]['VFRAME'] = \
                 V_LSR(c2000.ra.hour, c2000.dec.deg, self.tel.number, starttime)
-        tabhdu.data[data_row_index]['RVSYS'] = \
-                                      tabhdu.data[data_row_index]['VELOCITY'] \
-                                    + tabhdu.data[data_row_index]['VFRAME']
+        FITSrec[data_row_index]['RVSYS'] = \
+                                      FITSrec[data_row_index]['VELOCITY'] \
+                                    + FITSrec[data_row_index]['VFRAME']
     
         # fourth data axis (polarization)
-        tabhdu.data[data_row_index]['CRVAL4'] = -1
-        tabhdu.data[data_row_index]['CDELT4'] = -1 # for I,Q,U,V (-1,-2,-3,-4)
+        FITSrec[data_row_index]['CRVAL4'] = -1
+        FITSrec[data_row_index]['CDELT4'] = -1 # for I,Q,U,V (-1,-2,-3,-4)
         
         # initialize power averages
         self.IFpower[data_row_index] = {'IF1': thisdata['IF1-ps'],
                                         'IF2': thisdata['IF2-ps']}
         # fit the tones to the data using the original resolution
-        bandwidth = tabhdu.data[data_row_index]['BANDWIDT']
-        if tonetabhdu:
+        bandwidth = FITSrec[data_row_index]['BANDWIDT']
+        if toneFITSrec != None:
           tone_offsets, tone_chnls = tone_chnl_nums(num_chan, obsfreq,
                                                     bandwidth)
           self.logger.debug("add_data: tone offsets: %s", tone_offsets)
@@ -601,66 +630,66 @@ class FITSfile_from_WVSR(FITSfile):
           IFidx = int(IF[-1])-1
           IFpwr = self.IFpower[data_row_index][IF]
           
-          if tonetabhdu:
+          if toneFITSrec != None:
             for tone in tone_chnls:
-              tonetabhdu.data[tone_row_index]['SCAN'] = scan   # int
+              toneFITSrec[tone_row_index]['SCAN'] = scan   # int
               self.logger.debug("add_data: processing tone(%d) is %d",
                                 subch_tone_idx, tone)
               # CYCLE increments by 1 for each row in the scan
-              tonetabhdu.data[tone_row_index]['CYCLE'] = subch_tone_idx + 1
+              toneFITSrec[tone_row_index]['CYCLE'] = subch_tone_idx + 1
               # all the following are the same for each tone in the subchannel
-              tonetabhdu.data[tone_row_index]['DATE-OBS'] = \
+              toneFITSrec[tone_row_index]['DATE-OBS'] = \
                                            "%4d/%02d/%02d" % (year, month, day)
-              tonetabhdu.data[tone_row_index]['UNIXtime'] = startUXtime
-              tonetabhdu.data[tone_row_index]['TIME'] = \
-                           tonetabhdu.data[tone_row_index]['UNIXtime']-midnight
-              tonetabhdu.data[tone_row_index]['EXPOSURE'] = thisdata[0]['count']
-              tonetabhdu.data[tone_row_index]['BANDWIDT'] = \
-                                     num_tonespec_chls*tabhdu.header['FREQRES']
-              tonetabhdu.data[tone_row_index]['OBSFREQ'] = obsfreq + \
-                                          (tone-65536)*tabhdu.header['FREQRES']
-              tonetabhdu.data[tone_row_index]['CDELT1'] = \
-                                                       tabhdu.header['FREQRES']
+              toneFITSrec[tone_row_index]['UNIXtime'] = startUXtime
+              toneFITSrec[tone_row_index]['TIME'] = \
+                           toneFITSrec[tone_row_index]['UNIXtime']-midnight
+              toneFITSrec[tone_row_index]['EXPOSURE'] = thisdata[0]['count']
+              toneFITSrec[tone_row_index]['BANDWIDT'] = \
+                                     num_tonespec_chls*self.exthead['FREQRES']
+              toneFITSrec[tone_row_index]['OBSFREQ'] = obsfreq + \
+                                          (tone-65536)*self.exthead['FREQRES']
+              toneFITSrec[tone_row_index]['CDELT1'] = \
+                                                       self.exthead['FREQRES']
               self.logger.debug("add_data: freq step is %f",
-                              tonetabhdu.data[tone_row_index]['CDELT1'])
+                              toneFITSrec[tone_row_index]['CDELT1'])
               halfband = num_tonespec_chls/2 # half the number of tone band chls
-              tonetabhdu.data[tone_row_index]['CRPIX1'] = halfband
+              toneFITSrec[tone_row_index]['CRPIX1'] = halfband
               # 
               # the frequency of the channel nearest to the tone
               nearest_chnl_freq = obsfreq + \
-                   (tone-65536)*tonetabhdu.data[tone_row_index]['CDELT1']
+                   (tone-65536)*toneFITSrec[tone_row_index]['CDELT1']
               tonefreq_kHz = (nearest_chnl_freq)/1000
               tonefreq = 1000*round(tonefreq_kHz)
               # center of the 16 channel spectrum extract
-              tonetabhdu.data[tone_row_index]['CRVAL1'] = nearest_chnl_freq
+              toneFITSrec[tone_row_index]['CRVAL1'] = nearest_chnl_freq
               self.logger.debug("add_data: tone frequency is %f", tonefreq)
               # get the data around the tone.
-              tonetabhdu.data[tone_row_index]['TONES'][IFidx,:] = \
+              toneFITSrec[tone_row_index]['TONES'][IFidx,:] = \
                                 thisdata[IF+'-ps'][tone-halfband:tone+halfband]
               # now fit the tone (freq in MHz)
               toneband_channels = numpy.arange(num_tonespec_chls)-halfband
               self.logger.debug("add_data: tone band channel numbers: %s",
                                                              toneband_channels)
-              x = (tonetabhdu.data[tone_row_index]['CRVAL1'] + \
+              x = (toneFITSrec[tone_row_index]['CRVAL1'] + \
                                   toneband_channels * \
-                                  tonetabhdu.data[tone_row_index]['CDELT1'])/1e6
-              y = tonetabhdu.data[tone_row_index]['TONES'][IFidx,:]
+                                  toneFITSrec[tone_row_index]['CDELT1'])/1e6
+              y = toneFITSrec[tone_row_index]['TONES'][IFidx,:]
               self.logger.debug("add_data: x = %s", x)
               self.logger.debug("add_data: y = %s", y)
               if not numpy.any(y):
                 # y is all zeros.  Give up
-                tonetabhdu.data[tone_row_index]['BASELINE'][IFidx,0,0,:] = \
+                toneFITSrec[tone_row_index]['BASELINE'][IFidx,0,0,:] = \
                                                                        nanarray
-                tonetabhdu.data[tone_row_index]['TONEAMP'][IFidx,0,0,:]  = \
+                toneFITSrec[tone_row_index]['TONEAMP'][IFidx,0,0,:]  = \
                                                                        nanarray
-                tonetabhdu.data[tone_row_index]['TONEOFST'][IFidx,0,0,:] = \
+                toneFITSrec[tone_row_index]['TONEOFST'][IFidx,0,0,:] = \
                                                                        nanarray
-                tonetabhdu.data[tone_row_index]['TONEWIDT'][IFidx,0,0,:] = \
+                toneFITSrec[tone_row_index]['TONEWIDT'][IFidx,0,0,:] = \
                                                                        nanarray
                 continue
               est_bias = numpy.append(y[:5], y[-6:]).mean()
               initial_guess = (est_bias, y[halfband], tonefreq/1e6,
-                             tabhdu.header['FREQRES']/1e6)
+                             self.exthead['FREQRES']/1e6)
               self.logger.debug("add_data: initial_guess = %s", initial_guess)
               popt, pcov = curve_fit(biased_scaled_sinc, x, y,
                                    p0=(initial_guess))
@@ -668,13 +697,13 @@ class FITSfile_from_WVSR(FITSfile):
               self.logger.debug("add_data: covars = %s", pcov)
               bias, amp, offset, std = popt
               dbias, damp, doffset, dstd = numpy.sqrt(numpy.diag(pcov))
-              tonetabhdu.data[tone_row_index]['BASELINE'][IFidx,0,0,:] = \
+              toneFITSrec[tone_row_index]['BASELINE'][IFidx,0,0,:] = \
                                                      numpy.array([bias, dbias])
-              tonetabhdu.data[tone_row_index]['TONEAMP'][IFidx,0,0,:] = \
+              toneFITSrec[tone_row_index]['TONEAMP'][IFidx,0,0,:] = \
                                                        numpy.array([amp, damp])
-              tonetabhdu.data[tone_row_index]['TONEOFST'][IFidx,0,0,:] = \
+              toneFITSrec[tone_row_index]['TONEOFST'][IFidx,0,0,:] = \
                                                  numpy.array([offset, doffset])
-              tonetabhdu.data[tone_row_index]['TONEWIDT'][IFidx,0,0,:] = \
+              toneFITSrec[tone_row_index]['TONEWIDT'][IFidx,0,0,:] = \
                                                        numpy.array([std, dstd])
               # remove the tones from the IF power data
               #    we need the map the channels for 'x' into the 
@@ -692,15 +721,15 @@ class FITSfile_from_WVSR(FITSfile):
             newspec, newrefval, newrefpix, newdelta = \
                         reduce_spectrum_channels(IFpwr, 0, 0, 0,
                                                  num_chan=1024)
-            tabhdu.data[data_row_index]['IFSPECTR'][IFidx, 0, 0,:] = newspec
+            FITSrec[data_row_index]['IFSPECTR'][IFidx, 0, 0,:] = newspec
             # end of tones section
           # compute the average power
-          tabhdu.data[data_row_index]['TSYS'][IFidx,0,0,0] = IFpwr.mean()
-          tsys_col_idx = tabhdu.data.columns.names.index('TSYS')
-          tabhdu.data.columns['TSYS'].unit = "count"
+          FITSrec[data_row_index]['TSYS'][IFidx,0,0,0] = IFpwr.mean()
+          tsys_col_idx = FITSrec.columns.names.index('TSYS')
+          FITSrec.columns['TSYS'].unit = "count"
           # end of IF loop
         # the data in dataset is keyed on scan number
-        refval = tabhdu.data[data_row_index]['OBSFREQ']
+        refval = FITSrec[data_row_index]['OBSFREQ']
         refpix = num_chan/2
         delta  = bandwidth/num_chan
         self.logger.debug("add_data: loading DATA")
@@ -716,20 +745,20 @@ class FITSfile_from_WVSR(FITSfile):
         V, newrefval, newrefpix, newdelta = \
                  reduce_spectrum_channels(thisdata['V'], refval, refpix, delta,
                                            num_chan=num_Stokes_chan)
-        tabhdu.data[data_row_index]['DATA'][0, 0, 0,:] = I
-        tabhdu.data[data_row_index]['DATA'][1, 0, 0,:] = Q
-        tabhdu.data[data_row_index]['DATA'][2, 0, 0,:] = U
-        tabhdu.data[data_row_index]['DATA'][3, 0, 0,:] = V
-        tabhdu.data[data_row_index]['CRVAL1'] = newrefval + delta/2
-        tabhdu.data[data_row_index]['CRPIX1'] = newrefpix
-        tabhdu.data[data_row_index]['CDELT1'] = newdelta
+        FITSrec[data_row_index]['DATA'][0, 0, 0,:] = I
+        FITSrec[data_row_index]['DATA'][1, 0, 0,:] = Q
+        FITSrec[data_row_index]['DATA'][2, 0, 0,:] = U
+        FITSrec[data_row_index]['DATA'][3, 0, 0,:] = V
+        FITSrec[data_row_index]['CRVAL1'] = newrefval + delta/2
+        FITSrec[data_row_index]['CRPIX1'] = newrefpix
+        FITSrec[data_row_index]['CDELT1'] = newdelta
         self.logger.info("add_data: finished row %d scan %d cycle %d",
-                         data_row_index, tabhdu.data[data_row_index]['SCAN'],
-                                         tabhdu.data[data_row_index]['CYCLE'])
+                         data_row_index, FITSrec[data_row_index]['SCAN'],
+                                         FITSrec[data_row_index]['CYCLE'])
         data_row_index += 1
         # end subch loop
       # end scan loop
-    return tabhdu, tonetabhdu
+    return FITSrec, toneFITSrec
   
   def get_dwell_times(self, activity_dir):
     """
@@ -745,7 +774,7 @@ class FITSfile_from_WVSR(FITSfile):
     files.sort()
     if files:
       fname = files[-1]
-      mylogger.debug("check_recording_time: %s", basename(fname))
+      mylogger.debug("get_dwell_times: %s", basename(fname))
       f = open(fname)
       lines = f.readlines()
       f.close()
@@ -759,7 +788,7 @@ class FITSfile_from_WVSR(FITSfile):
     for line in lines[8:]:
       parts = line.strip().split()
       scan = int(parts[0])
-      mylogger.debug("scan %d line has %d parts", scan, len(parts))
+      mylogger.debug("get_dwell_times: scan %d line has %d parts", scan, len(parts))
       if len(parts) == 8:
         self.oe_source[scan] = parts[1]
         self.oe_start[scan] = parts[5]
@@ -790,30 +819,40 @@ class FITSfile_from_WVSR(FITSfile):
     # different tables have different number of rows but the same scans
     for key in tablekeys:
       table = self.tables[key]
+      self.logger.debug("check_recording_times: table %s", key)
+      goodscans = []
       for scan in scans:
         rows = numpy.where(table.data['SCAN'] == scan)[0] # where returns tuple
-        # there are two rows for each cycle
-        obsdate = table.data['DATE-OBS'][rows[0]]
-        # these are datetime objects
-        on_start = datetime.datetime.strptime(obsdate+' '+self.oe_start[scan],
+        if len(rows):
+          # there are two rows for each cycle
+          obsdate = table.data['DATE-OBS'][rows[0]]
+          # these are datetime objects
+          on_start = datetime.datetime.strptime(obsdate+' '+self.oe_start[scan],
                                               "%Y/%m/%d %H:%M:%S")
-        on_end   = datetime.datetime.strptime(obsdate+' '+self.oe_end[scan],
+          on_end   = datetime.datetime.strptime(obsdate+' '+self.oe_end[scan],
                                               "%Y/%m/%d %H:%M:%S")
-        rec_start = self.collector.scaninfo[scan]['start']
-        rec_end   = self.collector.scaninfo[scan]['end']
-        if rec_start >= on_start-tol and rec_end <= on_end+tol:
-          # scan accepted
-          self.logger.info(
+          try:
+            rec_start = self.collector.scaninfo[scan]['start']
+            rec_end   = self.collector.scaninfo[scan]['end']
+          except KeyError:
+            continue
+          if rec_start >= on_start-tol and rec_end <= on_end+tol:
+            # scan accepted
+            goodscans.append(scan)
+            self.logger.info(
                          "check_recording_times: scan %d times are compatible",
                          scan)
-        else:
-          # insufficient time overlap
-          self.logger.warning(
+          else:
+            # insufficient time overlap
+            self.logger.warning(
                            "check_recording_times: scan %d times incompatible",
                            scan)
-          # set CYCLE to 0 in each table
-          table.data['CYCLE'][rows] = 0
-    return True
+            # set CYCLE to 0 in each table
+            table.data['CYCLE'][rows] = 0
+        else:
+          # no rows with this scan number
+          continue
+      print goodscans
     
 if __name__ == "__main__":
   examples = """
@@ -863,17 +902,25 @@ Examples
   obsdir, realdir, activity_dir, project_dir, datadir, wvsrdir, fftdir = \
                            get_session_dirs(args.activity, args.dss, year, doy)
 
+  # do essential directories exists
+  if not exists(activity_dir):
+    raise RuntimeError("There are no observing files for this session")
+  if not exists(wvsrdir):
+    raise RuntimeError("There is no WVSR data")
+  if not exists(fftdir):
+    raise RuntimeError("Post-processing to FFTs was not done")
   # get data for all the sources and verifiers used by the project
-  sourcedata = get_all_source_data(project_dir)
+  activity_root = '/'.join(activity_dir.split('/')[:7])+'/'
+  sourcedata = get_all_source_data(activity_root)
   
   # get the start and end time of the session
-  timesfiles = glob.glob(obsdir+"times-*")
+  timesfiles = glob.glob(activity_dir+"times-*")
   mylogger.debug("WVSR2SDITS found %s", timesfiles)
   if len(timesfiles) < 1:
     raise RuntimeError("WVSR2SDITS: no times file in %s" % obsdir)
   elif len(timesfiles) > 1:
     raise RuntimeError("WVSR2SDITS: can only handle one timesfile; %s has %d" \
-                       % (obsdir, len(timesfiles)))
+                       % (activity_dir, len(timesfiles)))
   starttime = get_start_time(timesfiles[0])
 
   # get a manager for the NMC log for this session.
@@ -941,6 +988,7 @@ Examples
       wvsr =  cfg_key
     ff.make_WVSR_table(config, collector, NMClogserver, cfg_key,
                        tones=args.tones)
+  ff.check_recording_times(activity_dir) 
   
   hdulist = pyfits.HDUList([ff.prihdu]+ff.tables.values())
   parts = realdir.split('/')
@@ -949,6 +997,6 @@ Examples
   fitspath = "/".join(parts)
   mkdir_if_needed(fitspath)
   fname = fitspath + "WVSR" + "_%4d-%03d-%s.fits" % (year, doy, starttime)
-  mylogger.debug("WVSR2SDFITS writing %s", fname)
+  mylogger.info("WVSR2SDFITS writing %s", fname)
   hdulist.writeto(fname, clobber=True)
   mylogger.critical(" WVSR2SDFITS ended")

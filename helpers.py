@@ -188,7 +188,8 @@ class WVSRmetadataCollector:
     
     In quite a few cases we simply exec() a statement this is in the line or
     is constructed from parts of the line.  A typical line looks like this:
-    16/237 08:45:15 wvsr2 ATT[2]: att = 15, des_amp = -10, cur_amp = -10.07, max_amp = 0, min_amp = -50
+    16/237 08:45:15 wvsr2 ATT[2]: att = 15, des_amp = -10, cur_amp = -10.07, \
+                                                     max_amp = 0, min_amp = -50
     """
     logfile = open(logname,'r')
     logtext = logfile.read()
@@ -277,13 +278,12 @@ class WVSRmetadataCollector:
         UT = WVSR_script_time_to_timestamp(*parts[:2])
         try:
           # this executes something like" "ATT[2]['att']=15"
-          #self.logger.debug("parse_WVSR_log: trying %s",
-          #                  parts[3][:-1]+"['"+parts[4]+"']"+"="+parts[6].strip(','))
-          #exec(parts[3][:-1]+"['"+parts[4]+"']"+"="+parts[6].strip(','))
           self.logger.debug("parse_WVSR_log: trying %s",
                             parts[3][:-1] + \
-                             "["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
-          exec(parts[3][:-1]+"["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
+                            "["+str(UT) + "]['" + parts[4] + "']" + \
+                            "="+parts[6].strip(','))
+          exec(parts[3][:-1] + "["+str(UT) + "]['" + parts[4] + "']" + \
+               "="+parts[6].strip(','))
         except KeyError,details:
           # ATT[2] is not defines as a dict
           self.logger.debug("parse_WVSR_log: failed because %s", details)
@@ -293,10 +293,13 @@ class WVSRmetadataCollector:
           exec(parts[3][:-1]+"={"+str(UT)+": {}}")
           # this executes something like "ATT[2][1472028315]['att']=15"
           self.logger.debug("parse_WVSR_log: trying %s",
-                            parts[3][:-1]+"["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
-          exec(parts[3][:-1]+"["+str(UT)+"]['"+parts[4]+"']"+"="+parts[6].strip(','))
+                            parts[3][:-1] + "["   +str(UT)+ "]['"+parts[4] + \
+                            "']"+"="+parts[6].strip(','))
+          exec(parts[3][:-1] + "[" + str(UT) + "]['" + parts[4] + "']" + \
+               "="+parts[6].strip(','))
           # now that the dict exists add the power
-          exec(parts[3][:-1]+"["+str(UT)+"]['"+parts[10]+"']"+"="+parts[12].strip(',')) 
+          exec(parts[3][:-1] + "[" + str(UT) + "]['" + parts[10] + "']" + \
+               "="+parts[12].strip(',')) 
     self.logger.info("parse_WVSR_log: EXPID = %s", EXPID)
     self.logger.info("parse_WVSR_log: RF_TO_IF_LO = %s", RF_TO_IF_LO)
     self.logger.info("parse_WVSR_log: IFS = %s", IFS)
@@ -425,23 +428,31 @@ class WVSRmetadataCollector:
         extracted = self.parse_fft_log(lines)
         self.logger.debug("get_metadata_from_FFT_logs: extracted %s",
                           extracted)
-        self.scaninfo[scan]['start'] = datetime.strptime(
-                                                 extracted[subch]['first rec'],
+        if extracted:
+          # the start and end time are the same for both channels so use 1
+          self.scaninfo[scan]['start'] = datetime.strptime(
+                                                 extracted[1]['first rec'],
                                                  "%Y %j:%H:%M:%S.%f")
-        self.scaninfo[scan]['end'] = datetime.strptime(extracted[subch]['last rec'],
+          self.scaninfo[scan]['end'] = \
+                                datetime.strptime(extracted[1]['last rec'],
                                                    "%Y %j:%H:%M:%S.%f")
+        else:
+          # no data for this scan; skip to next one
+          continue
         # move to metadata structure
-        for ch in extracted.keys(): # these keys are channels
+        extracted_keys = extracted.keys()
+        IFs = []
+        for key in extracted_keys:
+          if type(key) == int:
+            IFs.append(key)
+          else:
+            self.fft_meta[scan][key] = extracted[key]
+        for ch in IFs: # these keys are channels
           self.fft_meta[scan][ch][subch_key] = {} # third level dict on subch
           for key in extracted[ch].keys(): # these keys are variable names
-            #self.logger.debug("get_metadata_from_FFT_logs: ch %d sub %s key '%s'",
-            #                  ch, subch_key, key)
-            if key == 'n_samples' or key == 'n_freqs':
-              #self.fft_meta[scan][ch][key] = extracted[ch][key]
-              self.fft_meta[scan][key] = extracted[ch][key]
-            else:
-              self.fft_meta[scan][ch][subch_key][key] = extracted[ch][key]
-              #self.fft_meta[scan][subch_key][key] = extracted[ch][key]
+            self.fft_meta[scan][ch][subch_key][key] = extracted[ch][key]
+      self.logger.debug("get_metadata_from_FFT_logs: scan %d FFT metadata: %s",
+                        scan, self.fft_meta[scan])
           
   def parse_fft_log_name(self, logname):
     """
@@ -493,20 +504,20 @@ class WVSRmetadataCollector:
     The output is a dict like this example for scan 1::
       In [2]: collector.fft_meta[1]
       Out[2]: 
-      {1: {'chan_id 2': {'datafile': '/data2/16g237/16-237-002-s0001_d14_RCP.wvsr',
-                         'first rec': '2016 237:09:30:31.000',
-                         'last_rec': '2016 237:09:32:00.000',
-                         'n_recs': 91,
-                         'n_secs': 91}},
-       2: {'chan_id 2': {'datafile': '/data2/16g237/16-237-002-s0001_d14_LCP.wvsr',
-                         'first rec': '2016 237:09:30:31.000',
-                         'last_rec': '2016 237:09:32:00.000',
-                         'n_freqs': 131072,
-                         'n_recs': 91,
-                         'n_samples': 8000000,
-                         'n_secs': 91}}}
-        where the first key is the IF channel.
-    
+      {1: {'datafile': '/data2/16g237/16-237-002-s0001_d14_RCP.wvsr',
+           'first rec': '2016 237:09:30:31.000',
+           'last_rec': '2016 237:09:32:00.000',
+           'n_recs': 91,
+           'n_secs': 91},
+       2: {'datafile': '/data2/16g237/16-237-002-s0001_d14_LCP.wvsr',
+           'first rec': '2016 237:09:30:31.000',
+           'last_rec': '2016 237:09:32:00.000',
+           'n_recs': 91,
+           'n_secs': 91},
+      'n_freqs': 131072,
+      'n_samples': 8000000}
+      where the first key is the IF channel.
+            
     We don't know yet how to handle FFT logs if there are two or more WVSRs so
     'wvsr_cfg' for one and only one has a similar structure with WVSR ID in
     place of scan number.
@@ -531,14 +542,19 @@ class WVSRmetadataCollector:
         if re.search("Last", line):
           found[channel]["last rec"] = ' '.join(parts[2:])
         if line[:4] == "nrec":
-          found[channel]["n_recs"] = int(parts[2])
-          found[channel]["n_secs"] = int(parts[5])
+          if int(parts[2]):
+            # non-zero
+            found[channel]["n_recs"] = int(parts[2])
+            found[channel]["n_secs"] = int(parts[5])
+          else:
+            # no data recorded
+            return {}
         if parts[0] == 'Unequal':
           in_preamble = False
       else:
         if re.search("ns.*npts.*power_two", line):
-          found[channel]["n_samples"] = int(parts[2][:-1])
-          found[channel]["n_freqs"] = int(parts[5])
+          found["n_samples"] = int(parts[2][:-1])
+          found["n_freqs"] = int(parts[5])
           break
     return found
 
