@@ -47,6 +47,16 @@ class WVSRmetadataCollector:
      'end': datetime.datetime(2016, 8, 24, 9, 42),
      'source': 'w5w-fregg51-ref',
      'start': datetime.datetime(2016, 8, 24, 9, 40, 30)}
+     
+  Methods::
+    get_WVSR_names(self):
+    get_metadata_from_WVSR_logs(self):
+    parse_WVSR_log(self, logname):
+    get_metadata_from_FFT_logs(self):
+    parse_fft_log_name(self, logname):
+    parse_fft_log(self, lines):
+    get_metadata_from_WVSR_scripts(self, band='X', pol="RCP"):
+    
   """
   def __init__(self, activity, dss, year, doy, time):
     """

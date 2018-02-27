@@ -99,6 +99,32 @@ class FITSfile_from_WVSR(FITSfile):
   spaced by 1 MHz (but could be 4 MHz). This is a feature not normally found in
   astronomical spectra but can be useful in calibration.  These tones are
   extracted from the high-resolution raw FFTs and saved in a separate table.
+  
+  Public attributes::
+    collector - WVSRmetadataCollector object
+    columns   - columns in the SINGLE DISH table
+    exthead   - header for the SINGLE DISH table
+    IFpower   - reduced resolution spectrum for monitoring IF
+    logger    - logging.Logger object
+    logserver - NMC_log_server object to fetch NMC metadata from file
+    oe_end    - end of antenna dwell time for a scan from SOE
+    oe_source - source for a scan from SOE
+    oe_start  - start of antenna dwell time for a scan from SOE
+    tables    - dict of pyfits.BinTableHDU objects
+    tonehead  - header for the PCG TONES table
+    
+  Methods::
+    add_data              -
+    get_dwell_times       -
+    get_hardware_metadata -
+    make_tone_columns     -
+    make_tone_header      -
+    
+  Inherited from FITSfile::
+    add_site_data              -
+    add_time_dependent_columns - 
+    make_basic_columns         -
+    make_data_axis             -
   """
   def __init__(self, tel):
     """
