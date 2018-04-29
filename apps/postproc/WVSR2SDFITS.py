@@ -99,6 +99,32 @@ class FITSfile_from_WVSR(FITSfile):
   spaced by 1 MHz (but could be 4 MHz). This is a feature not normally found in
   astronomical spectra but can be useful in calibration.  These tones are
   extracted from the high-resolution raw FFTs and saved in a separate table.
+  
+  Public attributes::
+    collector - WVSRmetadataCollector object
+    columns   - columns in the SINGLE DISH table
+    exthead   - header for the SINGLE DISH table
+    IFpower   - reduced resolution spectrum for monitoring IF
+    logger    - logging.Logger object
+    logserver - NMC_log_server object to fetch NMC metadata from file
+    oe_end    - end of antenna dwell time for a scan from SOE
+    oe_source - source for a scan from SOE
+    oe_start  - start of antenna dwell time for a scan from SOE
+    tables    - dict of pyfits.BinTableHDU objects
+    tonehead  - header for the PCG TONES table
+    
+  Methods::
+    add_data              -
+    get_dwell_times       -
+    get_hardware_metadata -
+    make_tone_columns     -
+    make_tone_header      -
+    
+  Inherited from FITSfile::
+    add_site_data              -
+    add_time_dependent_columns - 
+    make_basic_columns         -
+    make_data_axis             -
   """
   def __init__(self, tel):
     """
@@ -267,12 +293,67 @@ class FITSfile_from_WVSR(FITSfile):
     # add column for system temperatures
     self.columns.add_col(pyfits.Column(name='TSYS', format='2E', unit="K",
                                dim="(1,1,1,2)"))
-    # add IF monitor spectra to main table
+    # add column for IF spectra
     self.columns.add_col(pyfits.Column(name='IFSPECTR', format='2048E',
-                                       dim="(1024,1,1,2)"))
-    # use average spectrum power as proxy for system temperature
-    self.IFpower = {}
+                                         dim="(1024,1,1,2)"))
+                                         
+    self.logger.debug("make_WVSR_table: columns: %s", self.columns.names)
     
+    if tones:
+      # start extension header for tone data
+      self.make_tone_header()
+      self.make_tone_columns()
+      self.tonehead['backend'] = self.exthead['backend']
+      self.tonehead['maxis1']  = self.exthead['maxis1']
+      self.tonehead['freqres'] = self.exthead['freqres']
+      # Now describe the tone data structure
+      num_subch = len(subchannel_names)
+      total_num_tones = 0
+      for subch in subchannel_names: # count up total tones in both subchannels
+        # there is one tone every MHz
+        num_tones = \
+            int(self.collector.wvsr_cfg[cfg_key][1][anysubch]['bandwidth']/1e6)
+        total_num_tones += num_tones
+      #   we take 256 channels centered on the hi-res channel nearest the tone
+      toneaxis = 1; self.make_data_axis(self.tonehead, self.tonecols,
+                                        toneaxis, num_tonespec_chls,
+                                        'FREQ-OBS', 'D', unit='Hz',
+                                comment="channel frequency in telescope frame")
+      #     a Stokes spectrometer always has two input signals
+      # IF1 is Stokes code -1 (RR) and IF2 is -2 (LL)
+      toneaxis+=1; self.make_data_axis(self.tonehead, self.tonecols, 
+                                       toneaxis, 2, 
+                                       'STOKES',  'I',
+                                       comment="polarization code: -2, -1")
+      # Make the tone data column (MAXIS was set by make_data_axis)
+      fmt_multiplier = self.tonehead['MAXIS1']*self.tonehead['MAXIS2']
+      self.logger.debug("make_WVSR_table: tone format multiplier = %d",
+                      fmt_multiplier)
+      dimsval = "("+str(self.tonehead['MAXIS1']) + "," + \
+                    str(self.tonehead['MAXIS2'])+")"
+      self.logger.debug("make_WVSR_table: computed scan shape: %s", dimsval)
+      data_format = str(fmt_multiplier)+"E"
+      self.logger.debug("make_WVSR_table: data_format = %s", data_format)
+      self.tonecols.add_col(pyfits.Column(name='TONES',
+                             format=data_format, dim=dimsval))
+      # columns for tone fits
+      self.tonecols.add_col(pyfits.Column(name='BASELINE', format='4E',
+                                          dim="(2,1,1,2)"))
+      self.tonecols.add_col(pyfits.Column(name='TONEAMP',  format='4E',
+                                          dim="(2,1,1,2)"))
+      self.tonecols.add_col(pyfits.Column(name='TONEOFST', format='4E',
+                                          dim="(2,1,1,2)"))
+      self.tonecols.add_col(pyfits.Column(name='TONEWIDT', format='4E',
+                                          dim="(2,1,1,2)"))
+      # add IF monitor spectra to main table
+      # create a table extension for tone data
+      toneFITSrec = pyfits.FITS_rec.from_columns(self.tonecols,
+                                                nrows=numscans*total_num_tones)
+      #tonetabhdu = pyfits.BinTableHDU(data=toneFITSrec, header=self.tonehead,
+      #                              name="TONES PCG")
+    else:
+      toneFITSrec = None
+
     # create a structured numpy record for the data
     FITSrec = pyfits.FITS_rec.from_columns(self.columns,
                                            nrows=len(self.scans)*num_subchans)
@@ -448,7 +529,9 @@ class FITSfile_from_WVSR(FITSfile):
     bad_tones = []
     tones = False
     data_row_index = 0
-    tone_row_index = 0
+    #if toneFITSrec != None:
+    if type(toneFITSrec) == pyfits.FITS_rec:
+      tone_row_index = 0
     for scan in scans:    # self.collector.scankeys:
       # dataset header is keyed on the index of the scan in the set of scans
       try:
@@ -459,9 +542,10 @@ class FITSfile_from_WVSR(FITSfile):
         continue
       # use date of first record; see doc string for explanation of extra index
       year, month, day = calendar_date(self.collector.year, self.collector.doy)
+      date_obs = "%4d/%02d/%02d" % (year, month, day)
       subch_tone_idx = 0 # collect tone data from both subchannels
       for subch in subchannels:
-        if toneFITSrec != None:
+        if type(toneFITSrec) == pyfits.FITS_rec:  # toneFITSrec != None:
           self.logger.debug(
                      "add_data: processing scan %d %s data row %d tone row %d",
                      scan, subch, data_row_index, tone_row_index)
@@ -470,11 +554,9 @@ class FITSfile_from_WVSR(FITSfile):
                             scan, subch, data_row_index)
         sub_idx = subchannels.index(subch)
         FITSrec[data_row_index]['SCAN'] = scan   # int
-        FITSrec[data_row_index]['DATE-OBS'] = \
-                                           "%4d/%02d/%02d" % (year, month, day)
+        FITSrec[data_row_index]['DATE-OBS'] = date_obs         
         # UNIX time at midnight
-        midnight = time.mktime(dateutil.parser.parse(
-                          FITSrec[data_row_index]['DATE-OBS']).timetuple())
+        midnight = time.mktime(dateutil.parser.parse(date_obs).timetuple())
         # each subchannel has its own cycle
         FITSrec[data_row_index]['CYCLE'] = sub_idx+1
         self.logger.debug("add_data: CYCLE = %d",
@@ -616,14 +698,23 @@ class FITSfile_from_WVSR(FITSfile):
         FITSrec[data_row_index]['CDELT4'] = -1 # for I,Q,U,V (-1,-2,-3,-4)
         
         # initialize power averages
-        self.IFpower[data_row_index] = {}
-        # if tones, fit the tones to the data with original resolution
-        #    since 'add_tone_data' is called for both IFs and the counter
-        #    increments over both IFs, the tone counter must be outside
-        # 'add_tone_data'
-        subch_tone_idx = 0
-        for IF in IFs:
-          IFidx = IFs.index(IF)
+        self.IFpower[data_row_index] = {'IF1': thisdata['IF1-ps'],
+                                        'IF2': thisdata['IF2-ps']}
+        # fit the tones to the data using the original resolution
+        bandwidth = FITSrec[data_row_index]['BANDWIDT']
+        if type(toneFITSrec) == pyfits.FITS_rec:  # toneFITSrec != None:
+          tone_offsets, tone_chnls = tone_chnl_nums(num_chan, obsfreq,
+                                                    bandwidth)
+          self.logger.debug("add_data: tone offsets: %s", tone_offsets)
+          self.logger.debug("add_data: tone channels: %s", tone_chnls)
+          tone_indices = list(tone_chnls) # define the channels to be selected
+          num_tones = len(tone_indices)
+        offset, center_tone = math.modf(obsfreq/1e6) # tones every MHz
+        # the objective is to fit the position of one (e.g. central) tone
+        # and one std with all the other tones at a fixed distance from the
+        # central tone and one std for all tones.  The individual amplitudes
+        # may vary. 'multigauss.other_pars' has the fixed parameters.
+        for IF in ['IF1', 'IF2']:
           self.logger.debug("add_data: processing %s", IF)
           # this is the full spectrum IF power
           self.IFpower[data_row_index][IF] = thisdata[IF+"-ps"]
@@ -642,22 +733,102 @@ class FITSfile_from_WVSR(FITSfile):
             # get the frequencies of the tones relative to the center of the band and
             # the channels numbers where the tones appear in the spectrum 
           IFpwr = self.IFpower[data_row_index][IF]
-          toneFITSrec, tonerowindex, IFspec = self.add_tone_data(thisdata,
-                                                                 collector,
-                                                                 cfg_key,
-                                                                 toneFITSrec,
-                                                                 scan, 
-                                                                 subch,
-                                                                 IFidx,
-                                                                 IFs,
-                                                                 midnight,
-                                                                 tone_row_index,
-                                                                 subch_tone_idx,
-                                                                 IFpwr)
-          FITSrec[data_row_index]['IFSPECTR'][IFidx, 0, 0,:] = IFspec
-          # compute the average power from the whole, tone-free spectrum
-          FITSrec[data_row_index]['TSYS'][IFidx,0,0,0] = \
-                                         self.IFpower[data_row_index][IF].mean()
+          
+          if type(toneFITSrec) == pyfits.FITS_rec:  # toneFITSrec != None:
+            for tone in tone_chnls:
+              toneFITSrec[tone_row_index]['SCAN'] = scan   # int
+              self.logger.debug("add_data: processing tone(%d) is %d",
+                                subch_tone_idx, tone)
+              # CYCLE increments by 1 for each row in the scan
+              toneFITSrec[tone_row_index]['CYCLE'] = subch_tone_idx + 1
+              # all the following are the same for each tone in the subchannel
+              toneFITSrec[tone_row_index]['DATE-OBS'] = \
+                                           "%4d/%02d/%02d" % (year, month, day)
+              toneFITSrec[tone_row_index]['UNIXtime'] = startUXtime
+              toneFITSrec[tone_row_index]['TIME'] = \
+                           toneFITSrec[tone_row_index]['UNIXtime']-midnight
+              toneFITSrec[tone_row_index]['EXPOSURE'] = thisdata[0]['count']
+              toneFITSrec[tone_row_index]['BANDWIDT'] = \
+                                     num_tonespec_chls*self.exthead['FREQRES']
+              toneFITSrec[tone_row_index]['OBSFREQ'] = obsfreq + \
+                                          (tone-65536)*self.exthead['FREQRES']
+              toneFITSrec[tone_row_index]['CDELT1'] = \
+                                                       self.exthead['FREQRES']
+              self.logger.debug("add_data: freq step is %f",
+                              toneFITSrec[tone_row_index]['CDELT1'])
+              halfband = num_tonespec_chls/2 # half the number of tone band chls
+              toneFITSrec[tone_row_index]['CRPIX1'] = halfband
+              # 
+              # the frequency of the channel nearest to the tone
+              nearest_chnl_freq = obsfreq + \
+                   (tone-65536)*toneFITSrec[tone_row_index]['CDELT1']
+              tonefreq_kHz = (nearest_chnl_freq)/1000
+              tonefreq = 1000*round(tonefreq_kHz)
+              # center of the 16 channel spectrum extract
+              toneFITSrec[tone_row_index]['CRVAL1'] = nearest_chnl_freq
+              self.logger.debug("add_data: tone frequency is %f", tonefreq)
+              # get the data around the tone.
+              toneFITSrec[tone_row_index]['TONES'][IFidx,:] = \
+                                thisdata[IF+'-ps'][tone-halfband:tone+halfband]
+              # now fit the tone (freq in MHz)
+              toneband_channels = numpy.arange(num_tonespec_chls)-halfband
+              self.logger.debug("add_data: tone band channel numbers: %s",
+                                                             toneband_channels)
+              x = (toneFITSrec[tone_row_index]['CRVAL1'] + \
+                                  toneband_channels * \
+                                  toneFITSrec[tone_row_index]['CDELT1'])/1e6
+              y = toneFITSrec[tone_row_index]['TONES'][IFidx,:]
+              self.logger.debug("add_data: x = %s", x)
+              self.logger.debug("add_data: y = %s", y)
+              if not numpy.any(y):
+                # y is all zeros.  Give up
+                toneFITSrec[tone_row_index]['BASELINE'][IFidx,0,0,:] = \
+                                                                       nanarray
+                toneFITSrec[tone_row_index]['TONEAMP'][IFidx,0,0,:]  = \
+                                                                       nanarray
+                toneFITSrec[tone_row_index]['TONEOFST'][IFidx,0,0,:] = \
+                                                                       nanarray
+                toneFITSrec[tone_row_index]['TONEWIDT'][IFidx,0,0,:] = \
+                                                                       nanarray
+                continue
+              est_bias = numpy.append(y[:5], y[-6:]).mean()
+              initial_guess = (est_bias, y[halfband], tonefreq/1e6,
+                             self.exthead['FREQRES']/1e6)
+              self.logger.debug("add_data: initial_guess = %s", initial_guess)
+              popt, pcov = curve_fit(biased_scaled_sinc, x, y,
+                                   p0=(initial_guess))
+              self.logger.debug("add_data: pars = %s", popt)
+              self.logger.debug("add_data: covars = %s", pcov)
+              bias, amp, offset, std = popt
+              dbias, damp, doffset, dstd = numpy.sqrt(numpy.diag(pcov))
+              toneFITSrec[tone_row_index]['BASELINE'][IFidx,0,0,:] = \
+                                                     numpy.array([bias, dbias])
+              toneFITSrec[tone_row_index]['TONEAMP'][IFidx,0,0,:] = \
+                                                       numpy.array([amp, damp])
+              toneFITSrec[tone_row_index]['TONEOFST'][IFidx,0,0,:] = \
+                                                 numpy.array([offset, doffset])
+              toneFITSrec[tone_row_index]['TONEWIDT'][IFidx,0,0,:] = \
+                                                       numpy.array([std, dstd])
+              # remove the tones from the IF power data
+              #    we need the map the channels for 'x' into the 
+              IFpwr[tone + toneband_channels] -= \
+                                biased_scaled_sinc(x, bias, amp, offset, std)
+            
+              if IF == "IF2": # should be [list of IFs][-1] !!!!!!!!!!!!!!!!!!!
+                # because both IF go into the same row but different positions on
+                # the POL axis
+                tone_row_index += 1
+                subch_tone_idx += 1
+              # end of tone loop
+          # save smoothed IF power spectra
+          # axis specs not needed; simplest set for relative frequenies is::
+          newspec, newrefval, newrefpix, newdelta = \
+                        reduce_spectrum_channels(IFpwr, 0, 0, 0,
+                                                 num_chan=1024)
+          FITSrec[data_row_index]['IFSPECTR'][IFidx, 0, 0,:] = newspec
+          # compute the average power
+          FITSrec[data_row_index]['TSYS'][IFidx,0,0,0] = IFpwr.mean()
+          tsys_col_idx = FITSrec.columns.names.index('TSYS')
           FITSrec.columns['TSYS'].unit = "count"
           if IF == IFs[-1]:
             # last tone of last IF
@@ -827,12 +998,13 @@ class FITSfile_from_WVSR(FITSfile):
     for line in lines[8:]:
       parts = line.strip().split()
       scan = int(parts[0])
-      self.logger.debug("get_dwell_times: scan %d line has %d parts", scan, len(parts))
-      if len(parts) == 8:
+      mylogger.debug("get_dwell_times: scan %d line has %d parts", scan, len(parts))
+      # later files have the azimuth and elevation at the end of a scan.
+      if len(parts) == 8 or len(parts) == 10:
         self.oe_source[scan] = parts[1]
         self.oe_start[scan] = parts[5]
         self.oe_end[scan] = parts[6]
-      elif len(parts) == 9:
+      elif len(parts) == 9 or len(parts) == 11:
         # source name has space
         self.oe_source[scan] = "_".join(parts[1:3])
         self.oe_start[scan] = parts[6]
@@ -917,8 +1089,8 @@ if __name__ == "__main__":
   examples = """
 Examples
 ========
-  run WVSR2SDFITS.py --console_loglevel=debug --DSS=14 \
-                          --project=AUTO_EGG --date=2016/237
+  run WVSR2SDFITS.py --console_loglevel=debug --dss=14 \
+                          --activity=EGG0 --date=2016/237
 """  
   p = initiate_option_parser(__doc__, examples)
   p.usage='WVSR2SDFITS.py [options]'
@@ -1056,5 +1228,5 @@ Examples
   mkdir_if_needed(fitspath)
   fname = fitspath + "WVSR" + "_%4d-%03d-%s.fits" % (year, doy, starttime)
   mylogger.info("WVSR2SDFITS writing %s", fname)
-  hdulist.writeto(fname, clobber=True)
+  hdulist.writeto(fname, overwrite=True)
   mylogger.critical(" WVSR2SDFITS ended")
