@@ -272,6 +272,11 @@ class FITSfile_from_WVSR(FITSfile):
     # add column for system temperatures
     self.columns.add_col(pyfits.Column(name='TSYS', format='2E', unit="K",
                                dim="(1,1,1,2)"))
+    # add column for IF spectra
+    self.columns.add_col(pyfits.Column(name='IFSPECTR', format='2048E',
+                                         dim="(1024,1,1,2)"))
+                                         
+    self.logger.debug("make_WVSR_table: columns: %s", self.columns.names)
     
     if tones:
       # start extension header for tone data
@@ -320,16 +325,13 @@ class FITSfile_from_WVSR(FITSfile):
       self.tonecols.add_col(pyfits.Column(name='TONEWIDT', format='4E',
                                           dim="(2,1,1,2)"))
       # add IF monitor spectra to main table
-      self.columns.add_col(pyfits.Column(name='IFSPECTR', format='2048E',
-                                         dim="(1024,1,1,2)"))
-      self.logger.debug("make_WVSR_table: columns: %s", self.columns.names)
       # create a table extension for tone data
       toneFITSrec = pyfits.FITS_rec.from_columns(self.tonecols,
                                                 nrows=numscans*total_num_tones)
       #tonetabhdu = pyfits.BinTableHDU(data=toneFITSrec, header=self.tonehead,
       #                              name="TONES PCG")
     else:
-      tonetabhdu = None
+      toneFITSrec = None
     # create a structured numpy record for the data
     FITSrec = pyfits.FITS_rec.from_columns(self.columns,
                                            nrows=numscans*num_subchans)
@@ -473,7 +475,8 @@ class FITSfile_from_WVSR(FITSfile):
 
     self.IFpower = {}
     data_row_index = 0
-    if toneFITSrec != None:
+    #if toneFITSrec != None:
+    if type(toneFITSrec) == pyfits.FITS_rec:
       tone_row_index = 0
     for scan in scans:    # self.collector.scankeys:
       # dataset header is keyed on the index of the scan in the set of scans
@@ -485,12 +488,10 @@ class FITSfile_from_WVSR(FITSfile):
         continue
       # use date of first record; see doc string for explanation of extra index
       year, month, day = calendar_date(self.collector.year, self.collector.doy)
-      # UNIX time at midnight
-      midnight = time.mktime(dateutil.parser.parse(
-                          FITSrec[data_row_index]['DATE-OBS']).timetuple())
+      date_obs = "%4d/%02d/%02d" % (year, month, day)
       subch_tone_idx = 0 # collect tone data from both subchannels
       for subch in subchannels:
-        if toneFITSrec != None:
+        if type(toneFITSrec) == pyfits.FITS_rec:  # toneFITSrec != None:
           self.logger.debug(
                      "add_data: processing scan %d %s data row %d tone row %d",
                      scan, subch, data_row_index, tone_row_index)
@@ -499,8 +500,9 @@ class FITSfile_from_WVSR(FITSfile):
                             scan, subch, data_row_index)
         sub_idx = subchannels.index(subch)
         FITSrec[data_row_index]['SCAN'] = scan   # int
-        FITSrec[data_row_index]['DATE-OBS'] = \
-                                           "%4d/%02d/%02d" % (year, month, day)
+        FITSrec[data_row_index]['DATE-OBS'] = date_obs         
+        # UNIX time at midnight
+        midnight = time.mktime(dateutil.parser.parse(date_obs).timetuple())
         # each subchannel has its own cycle
         FITSrec[data_row_index]['CYCLE'] = sub_idx+1
         self.logger.debug("add_data: CYCLE = %d",
@@ -639,7 +641,7 @@ class FITSfile_from_WVSR(FITSfile):
                                         'IF2': thisdata['IF2-ps']}
         # fit the tones to the data using the original resolution
         bandwidth = FITSrec[data_row_index]['BANDWIDT']
-        if toneFITSrec != None:
+        if type(toneFITSrec) == pyfits.FITS_rec:  # toneFITSrec != None:
           tone_offsets, tone_chnls = tone_chnl_nums(num_chan, obsfreq,
                                                     bandwidth)
           self.logger.debug("add_data: tone offsets: %s", tone_offsets)
@@ -656,7 +658,7 @@ class FITSfile_from_WVSR(FITSfile):
           IFidx = int(IF[-1])-1
           IFpwr = self.IFpower[data_row_index][IF]
           
-          if toneFITSrec != None:
+          if type(toneFITSrec) == pyfits.FITS_rec:  # toneFITSrec != None:
             for tone in tone_chnls:
               toneFITSrec[tone_row_index]['SCAN'] = scan   # int
               self.logger.debug("add_data: processing tone(%d) is %d",
@@ -742,13 +744,12 @@ class FITSfile_from_WVSR(FITSfile):
                 tone_row_index += 1
                 subch_tone_idx += 1
               # end of tone loop
-            # save smoothed IF power spectra
-            # axis specs not needed; simplest set for relative frequenies is::
-            newspec, newrefval, newrefpix, newdelta = \
+          # save smoothed IF power spectra
+          # axis specs not needed; simplest set for relative frequenies is::
+          newspec, newrefval, newrefpix, newdelta = \
                         reduce_spectrum_channels(IFpwr, 0, 0, 0,
                                                  num_chan=1024)
-            FITSrec[data_row_index]['IFSPECTR'][IFidx, 0, 0,:] = newspec
-            # end of tones section
+          FITSrec[data_row_index]['IFSPECTR'][IFidx, 0, 0,:] = newspec
           # compute the average power
           FITSrec[data_row_index]['TSYS'][IFidx,0,0,0] = IFpwr.mean()
           tsys_col_idx = FITSrec.columns.names.index('TSYS')
@@ -815,11 +816,12 @@ class FITSfile_from_WVSR(FITSfile):
       parts = line.strip().split()
       scan = int(parts[0])
       mylogger.debug("get_dwell_times: scan %d line has %d parts", scan, len(parts))
-      if len(parts) == 8:
+      # later files have the azimuth and elevation at the end of a scan.
+      if len(parts) == 8 or len(parts) == 10:
         self.oe_source[scan] = parts[1]
         self.oe_start[scan] = parts[5]
         self.oe_end[scan] = parts[6]
-      elif len(parts) == 9:
+      elif len(parts) == 9 or len(parts) == 11:
         # source name has space
         self.oe_source[scan] = "_".join(parts[1:3])
         self.oe_start[scan] = parts[6]
@@ -884,8 +886,8 @@ if __name__ == "__main__":
   examples = """
 Examples
 ========
-  run WVSR2SDFITS.py --console_loglevel=debug --DSS=14 \
-                          --project=AUTO_EGG --date=2016/237
+  run WVSR2SDFITS.py --console_loglevel=debug --dss=14 \
+                          --activity=EGG0 --date=2016/237
 """  
   p = initiate_option_parser(__doc__, examples)
   p.usage='WVSR2SDFITS.py [options]'
@@ -1024,5 +1026,5 @@ Examples
   mkdir_if_needed(fitspath)
   fname = fitspath + "WVSR" + "_%4d-%03d-%s.fits" % (year, doy, starttime)
   mylogger.info("WVSR2SDFITS writing %s", fname)
-  hdulist.writeto(fname, clobber=True)
+  hdulist.writeto(fname, overwrite=True)
   mylogger.critical(" WVSR2SDFITS ended")

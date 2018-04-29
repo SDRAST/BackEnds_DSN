@@ -227,6 +227,10 @@ class WVSRmetadataCollector:
         wvsrID = parts[2] # third item
         user = parts[-2]  # second last item
         exec(parts[3][:-1]+"= "+"'"+str(parts[8])+"'")
+        # this is the clumsier way to get the signal for the IF
+        subparts = parts[8].split('_')
+        IFS[int(parts[3][6])] = subparts[1]+"_"+subparts[3][:-3]+"_"+subparts[3][-3:]
+        self.logger.debug("parse_WVSR_log: IFS is now %s", IFS)
       if re.search('RF_TO_IF_LO\[',line): # receiver or first LO
         # parse a log file line like::
         #   16/237 08:45:15 wvsr2 RF_TO_IF_LO[2]: RF_TO_IF_LO: value = 8100
@@ -392,19 +396,26 @@ class WVSRmetadataCollector:
     """
     fftlogs = glob.glob(self.fftdir+"*.log")
     fftlogs.sort()
+    if fftlogs == []:
+      raise RuntimeError("There are no logs in %s", self.fftdir)
     scans = []
     subchls = []
     # get the scan numbers
     for log in fftlogs:
       # parse file name
       logname = splitext(basename(log))[0]
-      YR, DOY, scan, subch, projcode  = self.parse_fft_log_name(logname)
+      self.logger.debug("get_metadata_from_FFT_logs: log basename: %s",
+                        logname)
+      YR, DOY, scan, subch, projcode, band  = self.parse_fft_log_name(logname)
+      self.logger.debug("get_metadata_from_FFT_logs: parsed: %s",
+                        YR, DOY, scan, subch, projcode, band)
       scans.append(scan)
       subchls.append(subch)
     scannums = unique(scans)
     self.logger.debug("get_metadata_from_FFT_logs: scannums: %s", scannums)
     subchannels = unique(subchls)
-    self.logger.debug("get_metadata_from_FFT_logs: subchannels: %s", subchannels)
+    self.logger.debug("get_metadata_from_FFT_logs: subchannels: %s",
+                      subchannels)
     # now parse the FFT log files
     self.fft_meta = {}
     for scan in scannums:
@@ -417,7 +428,10 @@ class WVSRmetadataCollector:
       for subch in subchannels:
         channelID = 'subch '+str(subch)
         # parse the FFT log
-        if projcode:
+        if projcode and band:
+          logname = "%2d-%03d-%03d-s%04d_d%2d_%3s_%s_RCP_LCP.wvsr.log" % \
+              (self.year-2000, self.doy, subch, scan, self.dss, projcode, band)
+        elif projcode:
           logname = "%2d-%03d-%03d-s%04d_d%2d_%3s_RCP_LCP.wvsr.log" % \
                   (self.year-2000, self.doy, subch, scan, self.dss, projcode)
         else:
@@ -476,7 +490,11 @@ class WVSRmetadataCollector:
     Some of these were later changed to something like::
       16-364-001-s0001_d14_EGG_RCP_LCP.wvsr.log
     This does not affect the year, DOY, channel, scan number
+    
+    Later still the filenames became something like::
+      18-090-002-s0001_d14_EGG_Xband_RCP_LCP.wvsr.log
     """
+    self.logger.debug("parse_fft_log_name: %s", logname)
     # split on the hyphens
     name_parts = logname.split('-')
     YR = int(name_parts[0])
@@ -499,10 +517,18 @@ class WVSRmetadataCollector:
                         logname)
       return False
     if len(lastparts) == 4:
-      return YR, DOY, scan, subch, None
+      return YR, DOY, scan, subch, None, None
     elif len(lastparts) == 5:
       # project code in log name
-      return YR, DOY, scan, subch, lastparts[2]
+      return YR, DOY, scan, subch, lastparts[2], None
+    elif len(lastparts)  == 6:
+      # band also in log name
+      # ['s0001', 'd14', 'EGG', 'Xband', 'RCP', 'LCP.wvsr']
+      return YR, DOY, scan, subch, lastparts[2], lastparts[3]
+    else:
+      self.logger.debug("parse_fft_log_name: last parts: %s", lastparts)
+      self.logger.error("parse_fft_log_name: unmanaged completion")
+      
       
   def parse_fft_log(self, lines):
     """
