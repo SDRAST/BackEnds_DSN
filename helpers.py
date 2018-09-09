@@ -352,9 +352,12 @@ class WVSRmetadataCollector:
         band = 'X'
       else:
         raise RuntimeError('unknown LO frequency', RF_TO_IF_LO[key])
-      # self.wvsr_cfg[wvsrID][key]['IF_source'] = IFS[key]
-      self.wvsr_cfg[wvsrID][key]['IF_source'] = EXPID[key][-7:].replace(
-                                                       EXPID[key][-4],band+'_')
+      try:
+        self.wvsr_cfg[wvsrID][key]['IF_source'] = IFS[key]
+      except:
+        # hope the EXPID is sensible
+        self.wvsr_cfg[wvsrID][key]['IF_source'] = EXPID[key][-7:].replace(
+                                                       EXPID[key][-4],band+'_')          
       subchans = CHAN[key].keys()
       for subch in subchans:
         self.wvsr_cfg[wvsrID][key][subch] = {}
@@ -554,36 +557,37 @@ class WVSRmetadataCollector:
     
     Eventually the project code was changed to a four digit activity code.
     
-    Returns year, DOY, activity, subch, band, dss
+    Returns year, DOY, scan, subch, activity, band, dss
     """
     self.logger.debug("parse_fft_log_name: %s", logname)
     # split on the hyphens to get year, DOY and subchannel
     name_parts = logname.split('-')
+    # extract year
     YR = int(name_parts[0])
     if 2000+YR != self.year:
       self.logger.error("parse_fft_log_name: %s is for wrong year",
                         logname)
       return False
+    # extract DOY
     DOY = int(name_parts[1])
     if DOY != self.doy:
       self.logger.error("parse_fft_log_name: %s is for wrong DOY",
                         logname)
       return False
+    # extract subchannel
     subch = int(name_parts[2])
-    # split the underscore delimited part
+    # split the underscore delimited part (which starts with scan number)
     lastparts = name_parts[3].split("_")
+    # extract scan, the first item in the last parts list
     scan = int(lastparts[0][1:]) # removes 's'
-    # at this point the filename takes different forms
-    if lastparts[1][0] == "d":
-      # if a station ID is given, check that it is correct
-      dss = int(lastparts[1][1:])  # removes 'd'
-      if dss != self.dss:
-        self.logger.error("parse_fft_log_name: %s is for wrong DSS",
+    dss = int(lastparts[1][1:])  # removes 'd'
+    if dss != self.dss:
+      self.logger.error("parse_fft_log_name: %s is for wrong DSS",
                           logname)
-        return False
-      return YR, DOY, scan, subch, None, None, dss
-    else:
+      return False
+    elif len(lastparts) == 4:
       return YR, DOY, scan, subch, None, None, None
+    # at this point the filename takes different forms
     if len(lastparts) == 5:
       # project code in log name
       return YR, DOY, scan, subch, lastparts[2], None, dss

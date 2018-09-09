@@ -45,7 +45,8 @@ from scipy.optimize import curve_fit
 
 from Astronomy import calendar_date
 from Astronomy.redshift import V_LSR
-from Automation import activity_project, get_session_dirs, get_start_time
+from Automation import activity_project, get_session_dirs
+from Automation import get_start_time, get_end_time
 from Automation.NMClogs import NMClogManager,NMC_log_server 
 from Automation.sources import get_all_source_data
 from Automation.tones import tone_chnl_nums
@@ -548,22 +549,6 @@ class FITSfile_from_WVSR(FITSfile):
       # add a CYCLE row for every WVSR subchannel
       for subch in subchannels:
         sub_idx = subchannels.index(subch)
-        cycle = sub_idx + 1
-        data_row_index = get_row("SINGLE DISH", scans, scan=scan,
-                                  num_cycles=len(subchannels), cycle=cycle)
-        #self.logger.debug(
-        #             "add_data: processing scan %d %s data row %d tone row %d",
-        #             scan, subch, data_row_index, tone_row_index)
-        self.logger.debug("add_data: processing scan %d %s data row %d",
-                          scan, subch, data_row_index)
-        FITSrec[data_row_index]['SCAN'] = scan   # int
-        FITSrec[data_row_index]['DATE-OBS'] = date_obs         
-        # UNIX time at midnight
-        midnight = time.mktime(dateutil.parser.parse(date_obs).timetuple())
-        # each subchannel has its own cycle
-        FITSrec[data_row_index]['CYCLE'] = cycle
-        self.logger.debug("add_data: CYCLE = %d", 
-                          FITSrec[data_row_index]['CYCLE'])
         try:
           datafile = self.collector.scaninfo[scan]['subch '+str(sub_idx+1)]
         except KeyError, details:
@@ -580,6 +565,22 @@ class FITSfile_from_WVSR(FITSfile):
           "add_data: read_FFT_file return not a numpy array for scan %d %s",
             scan, subch)
           continue
+        cycle = sub_idx + 1
+        data_row_index = get_row("SINGLE DISH", scans, scan=scan,
+                                  num_cycles=len(subchannels), cycle=cycle)
+        #self.logger.debug(
+        #             "add_data: processing scan %d %s data row %d tone row %d",
+        #             scan, subch, data_row_index, tone_row_index)
+        self.logger.debug("add_data: processing scan %d %s data row %d",
+                          scan, subch, data_row_index)
+        FITSrec[data_row_index]['SCAN'] = scan   # int
+        FITSrec[data_row_index]['DATE-OBS'] = date_obs         
+        # UNIX time at midnight
+        midnight = time.mktime(dateutil.parser.parse(date_obs).timetuple())
+        # each subchannel has its own cycle
+        FITSrec[data_row_index]['CYCLE'] = cycle
+        self.logger.debug("add_data: CYCLE = %d", 
+                          FITSrec[data_row_index]['CYCLE'])
         # In [26]: data.dtype.names
         # Out[26]: 
         # ('freq', 'IF1-ps', 'IF2-ps', 'IF1-phase', 'IF2-phase',
@@ -607,6 +608,8 @@ class FITSfile_from_WVSR(FITSfile):
           IFs = ['IF1']
         # put data in row
         FITSrec[data_row_index]['UNIXtime'] = startUXtime
+        if startUXtime == 0.0:
+          FITSrec[data_row_index]['CYCLE'] = 0
         FITSrec[data_row_index]['TIME'] = \
                                    FITSrec[data_row_index]['UNIXtime']-midnight
         if self.collector.scaninfo[scan]['source'][-4:] == "-ref":
@@ -1057,8 +1060,6 @@ Examples
                type = int,
                default = 14,
                help = 'DSN station number')
-  print sys.argv
-  #args = p.parse_args(sys.argv[1:])
   args = p.parse_args()
   
   mylogger = logging.getLogger()
@@ -1103,10 +1104,11 @@ Examples
     raise RuntimeError("WVSR2SDITS: can only handle one timesfile; %s has %d" \
                        % (activity_dir, len(timesfiles)))
   starttime = get_start_time(timesfiles[0])
+  endtime = get_end_time(timesfiles[0])
 
   # get a manager for the NMC log for this session.
   NMClogmanager = NMClogManager(station=args.dss,
-                                year=year, DOY=doy, time=starttime,
+                                year=year, DOY=doy, time=(starttime, endtime),
                                 use_portal=False)
   mylogger.debug("WVSR2SDITS NMC metadata available: %s",
                  NMClogmanager.metadata.keys())
@@ -1184,6 +1186,6 @@ Examples
   mkdir_if_needed(fitspath)
   fname = fitspath + "WVSR" + "_%4d-%03d-%s.fits" % (year, doy, starttime)
   mylogger.info("WVSR2SDFITS writing %s", fname)
-  hdulist.writeto(fname, clobber=True)
+  hdulist.writeto(fname, overwrite=True)
   print("WVSR2SDFITS wrote %s" % fname)
   mylogger.critical(" WVSR2SDFITS ended")
