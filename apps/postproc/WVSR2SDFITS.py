@@ -23,7 +23,7 @@ Steps::
 import IPython
 IPython.version_info = IPython.release.version.split('.')
 IPython.version_info.append('')
-
+print "IPython workaround done"
 import astropy.io.fits as pyfits
 import astropy.units as u
 import dateutil
@@ -44,6 +44,7 @@ from os.path import basename, exists
 from scipy.optimize import curve_fit
 
 from Astronomy import calendar_date
+from Astronomy.DSN_coordinates import DSS
 from Astronomy.redshift import V_LSR
 from Automation import activity_project, get_session_dirs
 from Automation import get_start_time, get_end_time
@@ -53,15 +54,14 @@ from Automation.tones import tone_chnl_nums
 from Automation.WVSR import get_Naudet_FFT_dir, make_datadir_name
 from Data_Reduction import get_obs_dirs, get_obs_session, select_data_files
 from Data_Reduction import get_num_chans, reduce_spectrum_channels
+from Data_Reduction.DSN.WVSR.collector import WVSRmetadataCollector
 from Data_Reduction.DSN.WVSR.SpecData import get_one_spectrum,read_FFT_file
 from Data_Reduction.FITS.DSNFITS import FITSfile, get_row
 from Data_Reduction.tipping import airmass
 from DatesTimes import datetime_to_UnixTime
 from local_dirs import sci_proj_path
 from Math.multigauss import gaussian
-from MonitorControl.BackEnds.DSN.helpers import WVSRmetadataCollector
-from MonitorControl.Configurations.coordinates import DSS
-from MonitorControl.Configurations.DSN_standard import standard_equipment
+#from MonitorControl.Configurations.DSN_standard import standard_equipment
 from MonitorControl.Configurations.GDSCC.WVSR import station_configuration
 from support import mkdir_if_needed
 from support.lists import unique
@@ -545,6 +545,8 @@ class FITSfile_from_WVSR(FITSfile):
       # use date of first record; see doc string for explanation of extra index
       year, month, day = calendar_date(self.collector.year, self.collector.doy)
       date_obs = "%4d/%02d/%02d" % (year, month, day)
+      fyear = self.collector.year + self.collector.doy/365.25
+      self.logger.debug("add_data: for scan %d, %s is J%f", scan, date_obs, fyear)
       #subch_tone_idx = 0 # collect tone data from both subchannels
       # add a CYCLE row for every WVSR subchannel
       for subch in subchannels:
@@ -571,7 +573,7 @@ class FITSfile_from_WVSR(FITSfile):
         #self.logger.debug(
         #             "add_data: processing scan %d %s data row %d tone row %d",
         #             scan, subch, data_row_index, tone_row_index)
-        self.logger.debug("add_data: processing scan %d %s data row %d",
+        self.logger.debug("add_data: processing scan %d subch %s data row %d",
                           scan, subch, data_row_index)
         FITSrec[data_row_index]['SCAN'] = scan   # int
         FITSrec[data_row_index]['DATE-OBS'] = date_obs         
@@ -597,7 +599,7 @@ class FITSfile_from_WVSR(FITSfile):
           continue
         # process the data
         endtime = self.collector.scaninfo[scan]['end']
-        self.logger.debug("add_data: for scan %d %s between %s and %s",
+        self.logger.debug("add_data: for scan %d subch %s between %s and %s",
                           scan, subch, starttime, endtime)
         startUXtime = datetime_to_UnixTime(starttime)
         endUXtime = datetime_to_UnixTime(endtime)
@@ -686,13 +688,14 @@ class FITSfile_from_WVSR(FITSfile):
         # the chain
              
         # second and third data axes (coordinates)
-        RA, dec = \
-          self.logserver.get_RAdec(startUXtime)
+        RA, dec = self.logserver.get_RAdec(startUXtime)
         self.logger.debug("add_data: apparent RA,dec = %f,%f", RA, dec)
         c = SkyCoord(RA, dec, unit=(u.deg, u.deg),
-                     frame=FK5(equinox=Time('J'+str(year), scale='utc')))
-        c2000 = c.transform_to(fk5_2000)
+                     frame=FK5(equinox=Time('J'+str(fyear), scale='utc')))
         self.logger.debug("add_data: RA,dec = %f,%f", c.ra.hour, c.dec.deg)
+        c2000 = c.transform_to(fk5_2000)
+        self.logger.debug("add_data: precessed RA,dec = %f,%f",
+                          c2000.ra.hour, c2000.dec.deg)
         FITSrec[data_row_index]['CRVAL2'] = c2000.ra.hour # hours
         FITSrec[data_row_index]['CRVAL3'] = c2000.dec.deg    # deg
         FITSrec[data_row_index]['EQUINOX'] = 2000
