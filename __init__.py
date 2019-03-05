@@ -4,7 +4,8 @@ import logging
 
 from MonitorControl import IF, Spectrum
 from MonitorControl.BackEnds import Backend, get_freq_array
-from MonitorControl.BackEnds.DSN.helpers import WVSRmetadataCollector
+#from MonitorControl.BackEnds.DSN.helpers import WVSRmetadataCollector
+from Data_Reduction.DSN.WVSR.collector import WVSRmetadataCollector
 
 logger = logging.getLogger(__name__)
 
