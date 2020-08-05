@@ -2,14 +2,11 @@
 """
 import logging
 
-from MonitorControl import IF, Spectrum
-from MonitorControl.BackEnds import Backend, get_freq_array
-#from MonitorControl.BackEnds.DSN.helpers import WVSRmetadataCollector
-from Data_Reduction.DSN.WVSR.collector import WVSRmetadataCollector
+import MonitorControl as MC
 
 logger = logging.getLogger(__name__)
 
-class WVSRbackend(Backend):
+class WVSRbackend(MC.BackEnds.Backend):
   """
   """
   def __init__(self, name, collector, inputs=None, output_names=None):
@@ -25,7 +22,7 @@ class WVSRbackend(Backend):
     @param output_names : names of output ports (not required)
     """
     mylogger = logging.getLogger(logger.name+".WVSRbackend")
-    Backend.__init__(self, name, inputs=inputs, output_names=output_names)
+    MC.Backend.__init__(self, name, inputs=inputs, output_names=output_names)
     self.collector = collector
     self.logger = mylogger
     self.logger.info("__init__: %s input channels: %s", self, self.inputs)
@@ -35,7 +32,7 @@ class WVSRbackend(Backend):
       self.wvsrs[name] = WVSRbackend.WVSR(self, name, inputs=inputs,
                                           output_names = output_names)
         
-  class WVSR(Backend.DSProc):
+  class WVSR(MC.BackEnds.Backend.DSProc):
     """
     """
     def __init__(self, parent, name, inputs=None, output_names=None):
@@ -47,7 +44,7 @@ class WVSRbackend(Backend):
       self.parent = parent
       mylogger = logging.getLogger(self.parent.name + ".WVSR")
       mylogger.debug("__init__: parent is %s", self.parent)
-      Backend.DSProc.__init__(self, self.parent, self.name, inputs=inputs,
+      MC.BackEnds.Backend.DSProc.__init__(self, self.parent, self.name, inputs=inputs,
                               output_names=output_names)
       self.logger = mylogger
       self.logger.info("__init__: %s input channels: %s", self, self.inputs)
@@ -74,7 +71,7 @@ class WVSRbackend(Backend):
                                                inputs={inname: inputs[inname]},
                                                output_names=output_names)
     
-    class IFchannel(Backend.DSProc.Channel):
+    class IFchannel(MC.BackEnds.Backend.DSProc.Channel):
       """
       Typically there are two, one for each polarization
       
@@ -89,7 +86,7 @@ class WVSRbackend(Backend):
         self.parent = parent
         mylogger = logging.getLogger(self.parent.name + ".IFchannel")
         mylogger.debug("__init__: parent is %s", self.parent)
-        Backend.DSProc.Channel.__init__(self, self.parent, self.name,
+        MC.BackEnds.Backend.DSProc.Channel.__init__(self, self.parent, self.name,
                                         inputs=inputs,
                                         output_names=output_names)
         self.logger = mylogger
@@ -105,11 +102,6 @@ class WVSRbackend(Backend):
           self.inputs[key].source.parent['LO'] = self.data['LO']
         subchannels = self.parent.cfg[IFnum]['subchannels']
         self.subchannel = {}
-        # FIX FIX FIX vvvvvvv
-        #self.logger.debug("__init__: FFT cfg keys: %s",
-        #                                     self.parent.fft_cfg[IFnum].keys())
-        #nchans = self.parent.fft_cfg[2]['n_freqs'] # UGLY HACK FOR ERROR in 
-        #                                                            helpers.py
         for inname in self.inputs.keys():
           # define the data channels; each IF shares the data channels
           for outname in self.outputs.keys():
@@ -124,32 +116,9 @@ class WVSRbackend(Backend):
                              output_names=output_names)
             self.outputs[outname].source = \
                                         self.subchannel[subch].outputs[outname]
-            #self.outputs[outname].source = self.inputs[inname]
-            #self.outputs[outname].signal = Spectrum(self.inputs[inname].signal,
-            #                                        num_chans=nchans)
           self.inputs[inname].destinations = self.outputs.values()
-          # redefine the parent output in terms of the channel output
-          # this attaches properties to the parents output.
-            #self.parent.outputs[outname] = self.outputs[outname]
-            #self.outputs[outname].signal['IF bandwidth'] = \
-            #                                      self.parent.data['bandwidth']
-            #self.parent.outputs[outname] = self.outputs[outname]
-          
-
-      #for subch in subchannels:
-      #  
-      #    
-      #  else:
-      #    
-      #    # select the outputs for this subchannel
-      #    for outname in output_names:
-      #      rx, sub, stokes = outname.split('.')
-      #      if sub == subch:
-      #        outnames.append(outname)
-      #    self.logger.debug("__init__: subchannel % outputs: %s", subch, outnames)
-      #    
              
-    class Subchannel(Backend.DSProc.Channel):
+    class Subchannel(MC.BackEnds.Backend.DSProc.Channel):
         """
         
         """
@@ -159,7 +128,7 @@ class WVSRbackend(Backend):
           self.name = name
           self.parent = parent
           mylogger = logging.getLogger(self.parent.name + ".Subchannel")
-          Backend.DSProc.Channel.__init__(self, self.parent, self.name,
+          MC.BackEnds.Backend.DSProc.Channel.__init__(self, self.parent, self.name,
                                       inputs=inputs, output_names=output_names)
           self.logger = mylogger
           self.logger.info("__init__: %s input channels: %s", 
@@ -176,14 +145,8 @@ class WVSRbackend(Backend):
             stokes = outname[-1]
             for inname in self.inputs.keys():
               self.outputs[outname].source = self.inputs[inname]
-              self.outputs[outname].signal = Spectrum(
+              self.outputs[outname].signal = MC.Spectrum(
                                            self.outputs[outname].source.signal,
                                            name=stokes,
                                            num_chans=self.data['nchans'])
-              #self.outputs[outname].signal['IF frequency'] = \
-              #                                    self.parent.data['frequency']
-              #self.outputs[outname].signal['IF bandwidth'] = \
-              #                                    self.parent.data['bandwidth']
-              #self.parent.outputs[outname] = self.outputs[outname]
-              pass
 
